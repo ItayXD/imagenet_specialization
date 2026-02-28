@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+
+# Env / uv
+.venv/
+.python-version.local
+
+# Outputs and artifacts
+outputs/
+wandb/
+/tmp/
+*.log
+*.zip
+*.egg-info/
+
+# Notebook checkpoints
+.ipynb_checkpoints/
+
+# macOS
+.DS_Store

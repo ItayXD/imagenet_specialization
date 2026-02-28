@@ -1,0 +1,47 @@
+# @package _global_
+setting:
+  dataset: imagenet
+  model: resnet18
+hyperparams:
+  task_list:
+  - training_params:
+      eta_0: 0.008
+      minibatch_size: 1024
+      microbatch_size: 128
+      num_workers: 24
+      epochs: 50
+      full_batch_gradient: false
+      ensemble_subsets: 1
+      use_checkpoint: false
+      ckpt_dir: ''
+      model_ckpt_dir: ''
+      use_warmup_cosine_decay: true
+      wcd_params:
+        warmup_epochs: 0.5
+        init_lr: 8.0e-05
+        min_lr: 8.0e-05
+      target_images_seen: 10000000
+      p_targets_images_seen: [100000, 138949, 193069, 268269, 372759, 517947, 719686, 1000000, 1389495, 1930698, 2682695, 3727593, 5179474, 7196856, 10000000]
+      wandb_enabled: true
+      wandb_project: imagenet-exchangeability
+      wandb_entity: ''
+      wandb_mode: online
+      run_id: exchangeability
+      width: 128
+      group_id: 2
+      member_group_size: 4
+      probe_batch_size: 1024
+      log_every_tranches: 10
+      max_tranches: 0
+    model_params:
+      BASE_N: 64
+      'N': 128
+      ensemble_size: 4
+      dtype: bfloat16
+    seed: 20273030
+  data_params:
+    P: 1281167
+    data_seed: 2423
+    root_dir: data-dir
+    val_P: 1024
+base_dir: /tmp/exchangeability/w128/g2
