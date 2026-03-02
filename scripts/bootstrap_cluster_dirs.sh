@@ -16,6 +16,6 @@ echo "  EXCHANGEABILITY_ROOT=${EXCHANGEABILITY_ROOT}"
 echo "  IMAGENET_FOLDER=${IMAGENET_FOLDER}"
 echo "  BASE_SAVE_DIR=${BASE_SAVE_DIR}"
 echo
-echo "Next step: download ImageNet archives into ${IMAGENET_FOLDER}:"
+echo "Next step: download/export ImageNet into ${IMAGENET_FOLDER}:"
 echo "  bash scripts/download_imagenet.sh"
-echo "This expects IMAGENET_TRAIN_URL / IMAGENET_VAL_URL / IMAGENET_DEVKIT_URL in ~/.secrets."
+echo "This expects HF_TOKEN in ~/.secrets (and optional HF_IMAGENET_REPO_ID)."

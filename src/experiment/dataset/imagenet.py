@@ -1,4 +1,6 @@
-from torchvision.datasets import ImageNet
+import os
+
+from torchvision.datasets import ImageFolder, ImageNet
 import torchvision.transforms as transforms
 
 from torch.utils.data import Subset
@@ -49,8 +51,17 @@ def load_imagenet_data(data_dir: str, data_params: Mapping) -> tuple[ch.utils.da
         normalize,
         channels_last_transform])
 
-    train_data = ImageNet(data_dir, 'train', transform=transform_comp)
-    val_data = ImageNet(data_dir, 'val', transform=val_transform_comp)
+    train_split_dir = os.path.join(data_dir, 'train')
+    val_split_dir = os.path.join(data_dir, 'val')
+
+    if os.path.isdir(train_split_dir) and os.path.isdir(val_split_dir):
+        log.info(f'Loading ImageFolder train/val splits from {data_dir}.')
+        train_data = ImageFolder(train_split_dir, transform=transform_comp)
+        val_data = ImageFolder(val_split_dir, transform=val_transform_comp)
+    else:
+        log.info(f'Loading torchvision ImageNet archive layout from {data_dir}.')
+        train_data = ImageNet(data_dir, 'train', transform=transform_comp)
+        val_data = ImageNet(data_dir, 'val', transform=val_transform_comp)
 
 
     train_indices = jr.choice(k1, len(train_data), (P,), replace=False)
@@ -65,5 +76,4 @@ def load_imagenet_data(data_dir: str, data_params: Mapping) -> tuple[ch.utils.da
 
     log.info(f'Training size: {len(train_data)}\nValidation size: {len(val_data)}')
     return train_data, val_data
-
 

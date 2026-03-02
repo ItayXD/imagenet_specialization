@@ -39,7 +39,7 @@ This repository now implements:
 - `scripts/bootstrap_cluster_dirs.sh`
 - `scripts/cluster_env.sh`
 - `scripts/download_imagenet.sh`
-- `scripts/prepare_imagenet_archives.py`
+- `scripts/download_imagenet_hf.py`
 - `scripts/submit_exchangeability_slurm.sh`
 - `scripts/run_largest_smoke.py`
 - `scripts/submit_largest_smoke_slurm.sh`
@@ -63,6 +63,7 @@ The code defaults to:
 5. `SBATCH_ACCOUNT=kempner_pehlevan_lab`
 6. `SBATCH_PARTITION=kempner`
 7. `WANDB_PROJECT=imagenet_specialization`
+8. `HF_IMAGENET_REPO_ID=ILSVRC/imagenet-1k` (override if needed)
 
 Load these defaults in each shell with:
 
@@ -92,8 +93,8 @@ uv sync --extra cluster
 
 ## ImageNet Data Setup
 
-`torchvision.datasets.ImageNet` does not provide a built-in public download for ImageNet due licensing.
-This repo now includes a download script that pulls the three official archives from URLs you provide and places them in your fixed directory.
+This repo includes a Hugging Face ImageNet downloader that exports torchvision-style `train/` and `val/` folders directly under your fixed directory.
+The training loader automatically uses `ImageFolder` when those folders exist.
 
 Use this directory (already defaulted):
 
@@ -105,17 +106,18 @@ bash scripts/download_imagenet.sh
 
 `scripts/download_imagenet.sh` expects these secrets to be set (for example in `~/.secrets`):
 
-1. `IMAGENET_TRAIN_URL`
-2. `IMAGENET_VAL_URL`
-3. `IMAGENET_DEVKIT_URL`
+1. `HF_TOKEN`
+2. optional `HF_IMAGENET_REPO_ID` (default `ILSVRC/imagenet-1k`)
 
-The script downloads:
+The script downloads from HF and materializes:
 
-1. `ILSVRC2012_img_train.tar`
-2. `ILSVRC2012_img_val.tar`
-3. `ILSVRC2012_devkit_t12.tar.gz`
+1. `$IMAGENET_FOLDER/train/<class>/...jpg`
+2. `$IMAGENET_FOLDER/val/<class>/...jpg`
 
-and then runs archive preparation so torchvision-ready `train/` and `val/` folders are materialized under `$IMAGENET_FOLDER`.
+Optional debug caps:
+
+1. `IMAGENET_MAX_TRAIN=<num>`
+2. `IMAGENET_MAX_VAL=<num>`
 
 ## Generate Experiment Configs (20 Jobs)
 
@@ -271,4 +273,4 @@ git push -u origin main
 
 ## What I Still Need From You
 
-1. `IMAGENET_TRAIN_URL`, `IMAGENET_VAL_URL`, `IMAGENET_DEVKIT_URL` in `~/.secrets`.
+1. Nothing else for infra. Just ensure `HF_TOKEN` and `WANDB_API_KEY` exist in `~/.secrets`.
