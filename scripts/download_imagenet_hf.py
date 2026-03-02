@@ -16,7 +16,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--root', default=os.environ.get('IMAGENET_FOLDER', ''), help='Output root (contains train/ and val/)')
     parser.add_argument('--train-split', default='train', help='HF split name for training data')
     parser.add_argument('--val-split', default='validation', help='HF split name for validation data')
-    parser.add_argument('--cache-dir', default=os.environ.get('HF_HOME', ''), help='HF datasets cache dir')
+    parser.add_argument(
+        '--cache-dir',
+        default=os.environ.get('HF_DATASETS_CACHE', os.environ.get('HF_HOME', '')),
+        help='HF datasets cache dir',
+    )
     parser.add_argument('--max-train', type=int, default=0, help='Optional cap for train samples (0 = full split)')
     parser.add_argument('--max-val', type=int, default=0, help='Optional cap for val samples (0 = full split)')
     parser.add_argument('--force', action='store_true', help='Re-export split even if done marker exists')

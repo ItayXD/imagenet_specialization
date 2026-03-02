@@ -64,6 +64,10 @@ The code defaults to:
 6. `SBATCH_PARTITION=kempner`
 7. `WANDB_PROJECT=imagenet_specialization`
 8. `HF_IMAGENET_REPO_ID=ILSVRC/imagenet-1k` (override if needed)
+9. `HF_HOME=$EXCHANGEABILITY_ROOT/hf_cache`
+10. `HF_DATASETS_CACHE=$HF_HOME/datasets`
+11. `HUGGINGFACE_HUB_CACHE=$HF_HOME/hub`
+12. `UV_CACHE_DIR=$EXCHANGEABILITY_ROOT/uv_cache`
 
 Load these defaults in each shell with:
 
@@ -113,6 +117,11 @@ The script downloads from HF and materializes:
 
 1. `$IMAGENET_FOLDER/train/<class>/...jpg`
 2. `$IMAGENET_FOLDER/val/<class>/...jpg`
+
+Safety behavior:
+
+1. the downloader fails if HF/uv cache paths point inside `$HOME`
+2. caches are forced under `/n/netscratch/kempner_pehlevan_lab/Lab/ilavie` defaults
 
 Optional debug caps:
 
