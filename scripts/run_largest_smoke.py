@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import subprocess
 import time
+import sys
 
 from omegaconf import OmegaConf
 
@@ -29,7 +30,7 @@ def main() -> None:
     smoke_images_seen = args.max_tranches * minibatch_size
 
     cmd = [
-        'python',
+        sys.executable,
         'main.py',
         f'experiment={args.experiment}',
         f'hyperparams.task_list[0].training_params.max_tranches={args.max_tranches}',

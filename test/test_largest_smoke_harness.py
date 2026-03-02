@@ -1,4 +1,5 @@
 import os
+import sys
 import pytest
 
 
@@ -7,7 +8,7 @@ def test_largest_smoke_harness_runs():
     import subprocess
 
     cmd = [
-        'python',
+        sys.executable,
         'scripts/run_largest_smoke.py',
         '--experiment',
         'exchangeability_w512_g0',

@@ -1,106 +1,137 @@
 # ImageNet Exchangeability Pipeline
 
-Cluster-ready pipeline for studying first-layer exchangeability in width-scaled ImageNet ensembles as a function of images seen (`P`).
+Cluster-ready pipeline to measure first-layer exchangeability in ImageNet ensembles as a function of images seen (`P`).
 
-## What This Implements
+## Scope
 
-1. Online ImageNet-1k training up to `1e7` images seen.
-2. Manuscript-style Adam schedule shape:
-- warmup `8e-5 -> 8e-3` over first `1%` of run,
-- cosine decay `8e-3 -> 8e-5` over remaining `99%`.
-3. Grouped ensemble execution:
-- widths: `N = [32, 64, 128, 256, 512]`
-- per-width ensemble size `M=16`
-- run as `4` jobs per width, each job training `4` vectorized members.
-4. Exact target checkpoint points:
-- 15 log-spaced `P` values from `1e5` to `1e7`.
-5. Exchangeability analysis on:
-- first-layer weights,
-- first-layer activations at `conv_init` (pre-BN/pre-ReLU).
-6. Two analyses:
-- `across_real vs across_shuffled` (primary),
-- `within_vs_across` diagnostic + shuffled diagnostic.
-7. Metrics and figures:
-- KS distance, raw p-value, two-sided sigma, W1 distance,
-- train/val loss and error vs images seen,
-- per-width curves.
-8. W&B tracking (online with fallback behavior configured by mode).
+This repository now implements:
 
-## Repository Entry Points
+1. Online ImageNet-1k training to `target_images_seen=10_000_000`.
+2. Manuscript LR shape: warmup `8e-5 -> 8e-3` then cosine decay `8e-3 -> 8e-5`.
+3. Width sweep with grouped ensembles:
+1. widths `N in [32, 64, 128, 256, 512]`
+2. 4 groups per width
+3. 4 members per group
+4. total `M=16` members per width
+4. Target checkpoint points: 15 deterministic log-spaced `P` values (`1e5` to `1e7`).
+5. Exchangeability analysis for:
+1. first-layer weights
+2. first-layer activations (`conv_init`, pre-BN/pre-ReLU)
+6. Statistical outputs:
+1. KS distance
+2. KS raw p-value
+3. two-sided sigma equivalent
+4. Wasserstein-1 (W1)
+7. Analyses:
+1. `across_real_vs_across_shuffled` (primary)
+2. `within_vs_across` diagnostic (with shuffle null)
+8. Training metrics logging: train/val loss and error.
+9. W&B integration with online/offline fallback behavior.
 
-- Training entrypoint: `main.py`
-- Core training loop: `src/experiment/training/online_momentum.py`
-- Shared analysis utils: `src/experiment/exchangeability_utils.py`
-- Config generator: `scripts/build_imagenet_sweep.py`
-- Manifest builder: `scripts/build_exchangeability_manifest.py`
-- SLURM submit helper: `scripts/submit_exchangeability_slurm.sh`
-- Analysis script: `scripts/analyze_exchangeability.py`
-- Plot script: `scripts/plot_exchangeability.py`
-- Notebooks:
-  - `notebooks/exchangeability_analysis.ipynb`
-  - `notebooks/exchangeability_plots.ipynb`
-- Largest-setting smoke harness: `scripts/run_largest_smoke.py`
+## Key Files
 
-## Required Environment
+- `main.py`
+- `config_structs.py`
+- `src/experiment/training/online_momentum.py`
+- `src/experiment/exchangeability_utils.py`
+- `scripts/build_imagenet_sweep.py`
+- `scripts/build_exchangeability_manifest.py`
+- `scripts/bootstrap_cluster_dirs.sh`
+- `scripts/cluster_env.sh`
+- `scripts/submit_exchangeability_slurm.sh`
+- `scripts/run_largest_smoke.py`
+- `scripts/submit_largest_smoke_slurm.sh`
+- `scripts/analyze_exchangeability.py`
+- `scripts/plot_exchangeability.py`
+- `notebooks/exchangeability_analysis.ipynb`
+- `notebooks/exchangeability_plots.ipynb`
 
-Set paths via environment variables:
+## Cluster Defaults (Already Set)
+
+Default root is:
+
+`/n/netscratch/kempner_pehlevan_lab/Lab/ilavie`
+
+The code defaults to:
+
+1. `EXCHANGEABILITY_ROOT=/n/netscratch/kempner_pehlevan_lab/Lab/ilavie`
+2. `IMAGENET_FOLDER=$EXCHANGEABILITY_ROOT/imagenet`
+3. `BASE_SAVE_DIR=$EXCHANGEABILITY_ROOT/exchangeability_outputs`
+4. `REMOTE_RESULTS_FOLDER=$EXCHANGEABILITY_ROOT`
+5. `SBATCH_ACCOUNT=kempner_pehlevan_lab`
+6. `SBATCH_PARTITION=kempner`
+7. `WANDB_PROJECT=imagenet_specialization`
+
+Load these defaults in each shell with:
 
 ```bash
-export IMAGENET_FOLDER=/path/to/imagenet
-export BASE_SAVE_DIR=/path/to/run_outputs
-export REMOTE_RESULTS_FOLDER=/path/to/permanent_results   # optional
+source scripts/cluster_env.sh
 ```
 
-`IMAGENET_FOLDER` should contain torchvision-compatible ImageNet layout.
+## `wandb_entity` meaning
 
-## Install
+`wandb_entity` is optional. Keep it empty (`''`) to log under the user account authenticated by your `WANDB_API_KEY`. Set it only if you want to log to a team/org workspace.
+
+## Install with `uv` (Python 3.11)
+
+### Local (CPU)
 
 ```bash
 uv python install 3.11
 uv sync --extra local
 ```
 
-This creates `.venv` using Python 3.11 and installs local CPU dependencies plus `pytest`.
-
-For cluster GPU environments:
+### Cluster (GPU)
 
 ```bash
 uv python install 3.11
 uv sync --extra cluster
 ```
 
-## Generate Configs (20 jobs)
+## ImageNet Data Setup
+
+This code uses `torchvision.datasets.ImageNet`, which expects torchvision-compatible ImageNet data.
+
+Use this directory (already defaulted):
 
 ```bash
-python scripts/build_imagenet_sweep.py
+source scripts/cluster_env.sh
+bash scripts/bootstrap_cluster_dirs.sh
 ```
 
-This creates:
-- `conf/experiment/exchangeability_w{width}_g{group}.yaml`
-- widths: 5
-- groups per width: 4
+Then place either:
 
-Default Hydra config is set to `experiment=exchangeability_w32_g0`.
+1. extracted `train/` and `val/` class folders under `$IMAGENET_FOLDER`, or
+2. official archives (`ILSVRC2012_img_train.tar`, `ILSVRC2012_img_val.tar`, `ILSVRC2012_devkit_t12.tar.gz`) under `$IMAGENET_FOLDER` so torchvision can parse/extract.
+
+## Generate Experiment Configs (20 Jobs)
+
+```bash
+source scripts/cluster_env.sh
+uv run python scripts/build_imagenet_sweep.py
+```
+
+This writes:
+
+- `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
 
 ## Build Manifest
 
 ```bash
-python scripts/build_exchangeability_manifest.py \
+source scripts/cluster_env.sh
+uv run python scripts/build_exchangeability_manifest.py \
   --config-dir conf/experiment \
-  --output conf/exchangeability_manifest.csv \
-  --base-save-dir "$BASE_SAVE_DIR"
+  --output conf/exchangeability_manifest.csv
 ```
 
-Manifest fields:
-- `job_id,width,group_id,member_seed_list,data_seed,target_images_seen,p_targets_images_seen,base_dir,save_dir,wandb_group,experiment_name`
-
-## Launch on SLURM
+## Full Training Submission (SLURM Array)
 
 ```bash
+source scripts/cluster_env.sh
 bash scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
 ```
 
-Optional runtime overrides:
+Supported overrides:
 
 ```bash
 export SBATCH_GPUS=1
@@ -109,145 +140,115 @@ export SBATCH_MEM=128G
 export SBATCH_TIME=72:00:00
 ```
 
-To compute a better `SBATCH_TIME`, run the largest-setting smoke timing first (below).
+Logs default to:
 
-## W&B Tracking
+`$BASE_SAVE_DIR/slurm_logs`
 
-Enabled in generated configs:
-- `wandb_enabled: true`
-- `wandb_mode: online`
+## Largest-Setting Smoke Timing (Submit with `sbatch`)
 
-Set credentials on cluster nodes as usual (`WANDB_API_KEY` or login).
-
-## Largest-Setting Smoke Test
-
-Run one short memory/progression smoke job locally or on a single cluster node:
+Use this first to estimate full runtime and tune `SBATCH_TIME`.
 
 ```bash
-uv run python scripts/run_largest_smoke.py \
-  --experiment exchangeability_w512_g0 \
-  --max-tranches 50
+source scripts/cluster_env.sh
+bash scripts/submit_largest_smoke_slurm.sh exchangeability_w512_g0 50 10000000 1.35
 ```
 
-This forces `max_tranches=50`, verifies large-width grouped training progresses, and prints:
-- measured images/sec,
-- estimated full-run hours to `target_images_seen`,
-- suggested `SBATCH_TIME` (with configurable safety factor).
+This runs 50 tranches at the largest setting and prints:
 
-## Analyze Exchangeability
+1. `images_per_second`
+2. `estimated_full_hours`
+3. `suggested_sbatch_time`
+
+Apply that suggestion before full array submission.
+
+## Analysis
 
 ```bash
+source scripts/cluster_env.sh
 uv run python scripts/analyze_exchangeability.py \
   --base-save-dir "$BASE_SAVE_DIR" \
   --run-id exchangeability \
-  --output-csv outputs/exchangeability_metrics.csv \
+  --output-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
   --shuffle-repeats 2000 \
   --probe-batch-size 1024 \
   --probe-loader-batch-size 1
 ```
 
-Output schema includes:
-- `width,images_seen,representation,analysis_type,shuffle_id,ks_distance,ks_p_raw,ks_sigma_two_sided,w1_distance,train_loss,val_loss,train_error,val_error`
-
-## Plot
+## Plotting
 
 ```bash
 uv run python scripts/plot_exchangeability.py \
-  --input-csv outputs/exchangeability_metrics.csv \
-  --output-dir outputs/plots_exchangeability
+  --input-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
+  --output-dir "$BASE_SAVE_DIR/plots_exchangeability"
 ```
 
-Generated figures include:
-- `ks_distance_vs_images_seen.png`
-- `w1_distance_vs_images_seen.png`
-- `train_loss_vs_images_seen.png`
-- `val_loss_vs_images_seen.png`
-- `train_error_vs_images_seen.png`
-- `val_error_vs_images_seen.png`
+## Notebook Analysis
 
-## Notebook Workflow
+- `notebooks/exchangeability_analysis.ipynb`
+- `notebooks/exchangeability_plots.ipynb`
 
-1. Open `notebooks/exchangeability_analysis.ipynb` to inspect/aggregate CSV outputs.
-2. Open `notebooks/exchangeability_plots.ipynb` to regenerate plot assets interactively.
-
-Both notebooks consume the same CSV generated by `scripts/analyze_exchangeability.py`.
+Both notebooks consume the same CSV from `scripts/analyze_exchangeability.py`.
 
 ## Tests
 
-New test coverage is in:
-- `test/test_exchangeability_utils.py`
-- `test/test_manifest_builder.py`
-- `test/test_largest_smoke_harness.py`
-
-### Local tests (run now)
+### Local tests already intended to run on CPU
 
 ```bash
 uv run pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py test/test_largest_smoke_harness.py
 ```
 
 Expected locally:
-- utility + manifest tests pass,
-- largest-smoke harness test is skipped unless explicitly enabled.
 
-### Cluster tests to run
+1. utility + manifest tests pass
+2. largest smoke harness test is skipped unless `RUN_LARGEST_SMOKE=1`
 
-1. Fast sanity subset:
+### Cluster tests (submit via `sbatch`)
 
-```bash
-uv run pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py
-```
-
-2. Largest-setting smoke harness (opt-in):
+Fast non-GPU sanity:
 
 ```bash
-export RUN_LARGEST_SMOKE=1
-export IMAGENET_FOLDER=/path/to/imagenet
-export BASE_SAVE_DIR=/path/to/run_outputs
-uv run pytest -q test/test_largest_smoke_harness.py
+source scripts/cluster_env.sh
+bash scripts/submit_fast_tests_slurm.sh
 ```
 
-3. Recommended timing run for job-time extrapolation:
+Largest smoke pytest harness (GPU, opt-in):
 
 ```bash
-uv run python scripts/run_largest_smoke.py \
-  --experiment exchangeability_w512_g0 \
-  --max-tranches 50 \
-  --safety-factor 1.35
+source scripts/cluster_env.sh
+bash scripts/submit_largest_smoke_pytest_slurm.sh
 ```
 
-Use the printed `suggested_sbatch_time` to set:
+## Time Extrapolation
+
+Yes. Runtime extrapolation is implemented in `scripts/run_largest_smoke.py`.
+
+It measures elapsed wall time for the smoke run (`max_tranches`, default 50) and computes an estimated full runtime to `target_images_seen` plus a safety-adjusted `suggested_sbatch_time`.
+
+## W&B Setup
+
+On cluster:
 
 ```bash
-export SBATCH_TIME=HH:MM:SS
+export WANDB_API_KEY=<your_key>
 ```
 
-## Required User Inputs
+Defaults already set:
 
-Before full cluster execution, set/provide:
+1. project: `imagenet_specialization`
+2. entity: empty string (uses your authenticated user account)
 
-1. `IMAGENET_FOLDER`: absolute path to ImageNet-1k data.
-2. `BASE_SAVE_DIR`: absolute path for checkpoints/artifacts.
-3. `REMOTE_RESULTS_FOLDER` (optional): permanent copy destination.
-4. W&B:
-- `WANDB_API_KEY`,
-- optional `wandb_entity` value (if using team/org account).
-5. SLURM details:
-- partition/account/QoS flags if your cluster requires them,
-- preferred `SBATCH_GPUS`, `SBATCH_CPUS`, `SBATCH_MEM`, `SBATCH_TIME`.
-
-## GitHub Sync Prep
-
-Project is prepared for GitHub sync with `.gitignore`, `pyproject.toml`, `.python-version`, and `uv.lock`.
-
-If this directory is not yet a git repo:
+If you later want a team entity:
 
 ```bash
-git init
-git add .
-git commit -m "Migrate to uv + exchangeability pipeline"
+export WANDB_ENTITY=<team_or_org_name>
+uv run python scripts/build_imagenet_sweep.py
 ```
 
-Then connect and push:
+## GitHub Sync
+
+Current branch/worktree is ready for push after your review.
+
+If remote is not set:
 
 ```bash
 git remote add origin <YOUR_GITHUB_REPO_URL>
@@ -255,7 +256,9 @@ git branch -M main
 git push -u origin main
 ```
 
-## Notes
+## What I Still Need From You
 
-- This codebase still contains older legacy files from previous experiments; the exchangeability pipeline uses the files listed above.
-- Analysis with full pooled distributions and large shuffle counts is compute-heavy by design.
+1. ImageNet access method on cluster (how you will fetch official archives).
+2. Your `WANDB_API_KEY` setup on cluster (env var or `wandb login`).
+3. Confirm if you want a different `BASE_SAVE_DIR` subfolder than `exchangeability_outputs`.
+4. Optional SLURM QoS/constraint flags, if your cluster requires them.

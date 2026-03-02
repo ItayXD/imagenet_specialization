@@ -1,8 +1,13 @@
 import os
 from os.path import dirname, join
 import random
+import sys
 
 from omegaconf import OmegaConf
+
+PROJECT_ROOT = os.path.dirname(os.path.dirname(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
 from config_structs import (
     Config,
@@ -21,9 +26,15 @@ WIDTHS = (32, 64, 128, 256, 512)
 NUM_GROUPS = 4
 MEMBERS_PER_GROUP = 4
 
-BASE_DIR = '/tmp/exchangeability/w{width}/g{group_id}'
+DEFAULT_CLUSTER_ROOT = os.environ.get(
+    'EXCHANGEABILITY_ROOT',
+    '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie',
+)
+BASE_DIR = DEFAULT_CLUSTER_ROOT + '/exchangeability_runs/w{width}/g{group_id}'
 RUN_ID = 'exchangeability'
 FULL_IMAGENET_TRAIN_SIZE = 1_281_167
+WANDB_PROJECT = os.environ.get('WANDB_PROJECT', 'imagenet_specialization')
+WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 
 
 
@@ -76,8 +87,8 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 target_images_seen=10_000_000,
                 p_targets_images_seen=p_targets,
                 wandb_enabled=True,
-                wandb_project='imagenet-exchangeability',
-                wandb_entity='',
+                wandb_project=WANDB_PROJECT,
+                wandb_entity=WANDB_ENTITY,
                 wandb_mode='online',
                 run_id=RUN_ID,
                 width=width,

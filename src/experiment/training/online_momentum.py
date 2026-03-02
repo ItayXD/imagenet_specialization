@@ -141,7 +141,7 @@ def _init_wandb(training_params: dict, model_params: dict, n_ensemble: int):
         info(f'W&B unavailable: {e}')
         return None
 
-    project = str(training_params.get('wandb_project', 'imagenet-exchangeability'))
+    project = str(training_params.get('wandb_project', 'imagenet_specialization'))
     entity = str(training_params.get('wandb_entity', '')).strip() or None
     mode = str(training_params.get('wandb_mode', 'online'))
     run_id = str(training_params.get('run_id', 'exchangeability'))

@@ -21,9 +21,24 @@ hyperparams:
         init_lr: 8.0e-05
         min_lr: 8.0e-05
       target_images_seen: 10000000
-      p_targets_images_seen: [100000, 138949, 193069, 268269, 372759, 517947, 719686, 1000000, 1389495, 1930698, 2682695, 3727593, 5179474, 7196856, 10000000]
+      p_targets_images_seen:
+      - 100000
+      - 138949
+      - 193069
+      - 268269
+      - 372759
+      - 517947
+      - 719686
+      - 1000000
+      - 1389495
+      - 1930698
+      - 2682695
+      - 3727593
+      - 5179474
+      - 7196856
+      - 10000000
       wandb_enabled: true
-      wandb_project: imagenet-exchangeability
+      wandb_project: imagenet_specialization
       wandb_entity: ''
       wandb_mode: online
       run_id: exchangeability
@@ -38,10 +53,10 @@ hyperparams:
       'N': 256
       ensemble_size: 4
       dtype: bfloat16
-    seed: 20285830
+    seed: 606003542
   data_params:
     P: 1281167
     data_seed: 2423
     root_dir: data-dir
     val_P: 1024
-base_dir: /tmp/exchangeability/w256/g2
+base_dir: /n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_runs/w256/g2

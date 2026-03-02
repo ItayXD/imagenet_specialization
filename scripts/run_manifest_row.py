@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import csv
 import subprocess
+import sys
 
 
 
@@ -27,7 +28,7 @@ def main() -> None:
     row = rows[args.index]
     experiment_name = row['experiment_name']
 
-    cmd = ['python', 'main.py', f'experiment={experiment_name}']
+    cmd = [sys.executable, 'main.py', f'experiment={experiment_name}']
     print('Running:', ' '.join(cmd))
     subprocess.run(cmd, check=True)
 

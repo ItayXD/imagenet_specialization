@@ -48,7 +48,7 @@ class TrainingParams:
     target_images_seen: int = 10_000_000
     p_targets_images_seen: list[int] = field(default_factory=_default_p_targets)
     wandb_enabled: bool = False
-    wandb_project: str = 'imagenet-exchangeability'
+    wandb_project: str = 'imagenet_specialization'
     wandb_entity: str = ''
     wandb_mode: str = 'online'
     run_id: str = 'exchangeability'
