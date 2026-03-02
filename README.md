@@ -38,6 +38,8 @@ This repository now implements:
 - `scripts/build_exchangeability_manifest.py`
 - `scripts/bootstrap_cluster_dirs.sh`
 - `scripts/cluster_env.sh`
+- `scripts/download_imagenet.sh`
+- `scripts/prepare_imagenet_archives.py`
 - `scripts/submit_exchangeability_slurm.sh`
 - `scripts/run_largest_smoke.py`
 - `scripts/submit_largest_smoke_slurm.sh`
@@ -90,19 +92,30 @@ uv sync --extra cluster
 
 ## ImageNet Data Setup
 
-This code uses `torchvision.datasets.ImageNet`, which expects torchvision-compatible ImageNet data.
+`torchvision.datasets.ImageNet` does not provide a built-in public download for ImageNet due licensing.
+This repo now includes a download script that pulls the three official archives from URLs you provide and places them in your fixed directory.
 
 Use this directory (already defaulted):
 
 ```bash
 source scripts/cluster_env.sh
 bash scripts/bootstrap_cluster_dirs.sh
+bash scripts/download_imagenet.sh
 ```
 
-Then place either:
+`scripts/download_imagenet.sh` expects these secrets to be set (for example in `~/.secrets`):
 
-1. extracted `train/` and `val/` class folders under `$IMAGENET_FOLDER`, or
-2. official archives (`ILSVRC2012_img_train.tar`, `ILSVRC2012_img_val.tar`, `ILSVRC2012_devkit_t12.tar.gz`) under `$IMAGENET_FOLDER` so torchvision can parse/extract.
+1. `IMAGENET_TRAIN_URL`
+2. `IMAGENET_VAL_URL`
+3. `IMAGENET_DEVKIT_URL`
+
+The script downloads:
+
+1. `ILSVRC2012_img_train.tar`
+2. `ILSVRC2012_img_val.tar`
+3. `ILSVRC2012_devkit_t12.tar.gz`
+
+and then runs archive preparation so torchvision-ready `train/` and `val/` folders are materialized under `$IMAGENET_FOLDER`.
 
 ## Generate Experiment Configs (20 Jobs)
 
@@ -229,7 +242,7 @@ It measures elapsed wall time for the smoke run (`max_tranches`, default 50) and
 On cluster:
 
 ```bash
-export WANDB_API_KEY=<your_key>
+source ~/.secrets
 ```
 
 Defaults already set:
@@ -258,7 +271,4 @@ git push -u origin main
 
 ## What I Still Need From You
 
-1. ImageNet access method on cluster (how you will fetch official archives).
-2. Your `WANDB_API_KEY` setup on cluster (env var or `wandb login`).
-3. Confirm if you want a different `BASE_SAVE_DIR` subfolder than `exchangeability_outputs`.
-4. Optional SLURM QoS/constraint flags, if your cluster requires them.
+1. `IMAGENET_TRAIN_URL`, `IMAGENET_VAL_URL`, `IMAGENET_DEVKIT_URL` in `~/.secrets`.
