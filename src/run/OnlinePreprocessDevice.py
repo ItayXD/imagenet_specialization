@@ -64,11 +64,10 @@ class OnlinePreprocessDevice(ABC):
         abs_path_fname = join(dir, fname)
         dp_yaml = OmegaConf.to_yaml(data_params)
         try:
-            with open(abs_path_fname, 'x') as f:
+            with open(abs_path_fname, 'w', encoding='utf-8') as f:
                 f.write(dp_yaml)
         except OSError as e:
-            logging.error('Could not write data config file.', e)
+            logging.error('Could not write data config file: %s', e)
             raise
         
-
 
