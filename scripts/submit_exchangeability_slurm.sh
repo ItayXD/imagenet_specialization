@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=imgnet-exchg
 #SBATCH --account=kempner_pehlevan_lab
-#SBATCH --partition=kempner
+#SBATCH --partition=kempner_h100
 #SBATCH --array=0-19
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=24

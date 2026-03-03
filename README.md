@@ -61,7 +61,7 @@ The code defaults to:
 3. `BASE_SAVE_DIR=$EXCHANGEABILITY_ROOT/exchangeability_outputs`
 4. `REMOTE_RESULTS_FOLDER=$EXCHANGEABILITY_ROOT`
 5. `SBATCH_ACCOUNT=kempner_pehlevan_lab`
-6. `SBATCH_PARTITION=kempner`
+6. `SBATCH_PARTITION=kempner_h100`
 7. `WANDB_PROJECT=imagenet_specialization`
 8. `HF_IMAGENET_REPO_ID=ILSVRC/imagenet-1k` (override if needed)
 9. `HF_HOME=$EXCHANGEABILITY_ROOT/hf_cache`

@@ -15,7 +15,7 @@ export UV_CACHE_DIR="${UV_CACHE_DIR:-${EXCHANGEABILITY_ROOT}/uv_cache}"
 export UV_PROJECT_ENVIRONMENT="${UV_PROJECT_ENVIRONMENT:-${EXCHANGEABILITY_ROOT}/uv_envs/imagenet_specialization-py311}"
 
 export SBATCH_ACCOUNT="${SBATCH_ACCOUNT:-kempner_pehlevan_lab}"
-export SBATCH_PARTITION="${SBATCH_PARTITION:-kempner}"
+export SBATCH_PARTITION="${SBATCH_PARTITION:-kempner_h100}"
 
 export WANDB_PROJECT="${WANDB_PROJECT:-imagenet_specialization}"
 export HF_IMAGENET_REPO_ID="${HF_IMAGENET_REPO_ID:-ILSVRC/imagenet-1k}"
