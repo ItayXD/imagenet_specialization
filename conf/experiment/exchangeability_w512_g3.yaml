@@ -11,7 +11,7 @@ hyperparams:
       num_workers: 24
       epochs: 50
       full_batch_gradient: false
-      ensemble_subsets: 1
+      ensemble_subsets: 4
       use_checkpoint: false
       ckpt_dir: ''
       model_ckpt_dir: ''

@@ -37,6 +37,11 @@ WANDB_PROJECT = os.environ.get('WANDB_PROJECT', 'imagenet_specialization')
 WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 
 
+def ensemble_subsets_for_width(width: int) -> int:
+    # Keep full vectorization for smaller widths, split width-512 for memory safety.
+    return MEMBERS_PER_GROUP if width >= 512 else 1
+
+
 
 def build_p_targets() -> list[int]:
     return [
@@ -82,7 +87,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 microbatch_size=128,
                 num_workers=24,
                 epochs=50,
-                ensemble_subsets=1,
+                ensemble_subsets=ensemble_subsets_for_width(width),
                 use_warmup_cosine_decay=True,
                 target_images_seen=10_000_000,
                 p_targets_images_seen=p_targets,

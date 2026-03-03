@@ -17,6 +17,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--target-images-seen', type=int, default=10_000_000, help='Target images seen override')
     parser.add_argument('--safety-factor', type=float, default=1.35, help='Multiplier for suggested SLURM time')
     parser.add_argument('--base-dir', default='', help='Optional explicit base_dir override for this smoke run')
+    parser.add_argument('--ensemble-subsets', type=int, default=0, help='Override ensemble_subsets for smoke run (0 = auto)')
     return parser.parse_args()
 
 
@@ -32,6 +33,12 @@ def _load_default_base_dir(experiment_name: str) -> str:
     return str(cfg.base_dir)
 
 
+def _load_ensemble_size(experiment_name: str) -> int:
+    cfg_path = f'conf/experiment/{experiment_name}.yaml'
+    cfg = OmegaConf.load(cfg_path)
+    return int(cfg.hyperparams.task_list[0].model_params.ensemble_size)
+
+
 def main() -> None:
     args = parse_args()
     minibatch_size = _load_minibatch_size(args.experiment)
@@ -39,6 +46,8 @@ def main() -> None:
     stamp = time.strftime('%Y%m%d-%H%M%S')
     default_base = _load_default_base_dir(args.experiment)
     smoke_base_dir = args.base_dir.strip() or os.path.join(default_base, 'smoke_runs', f'{stamp}-pid{os.getpid()}')
+    ensemble_size = _load_ensemble_size(args.experiment)
+    ensemble_subsets = args.ensemble_subsets if args.ensemble_subsets > 0 else ensemble_size
 
     cmd = [
         sys.executable,
@@ -46,12 +55,14 @@ def main() -> None:
         f'experiment={args.experiment}',
         f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
         f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
+        f'hyperparams.task_list.0.training_params.ensemble_subsets={ensemble_subsets}',
         f'base_dir={smoke_base_dir}',
     ]
 
     print('Running smoke test command:')
     print(' '.join(cmd))
     print(f'Using smoke base_dir: {smoke_base_dir}')
+    print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
 
     start = time.time()
     subprocess.run(cmd, check=True)

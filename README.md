@@ -141,6 +141,7 @@ uv run python scripts/build_imagenet_sweep.py
 This writes:
 
 - `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
+- width-512 configs default to `ensemble_subsets=4` for memory-safe grouped execution.
 
 ## Build Manifest
 
@@ -186,6 +187,9 @@ This runs 50 tranches at the largest setting and prints:
 1. `images_per_second`
 2. `estimated_full_hours`
 3. `suggested_sbatch_time`
+
+Smoke runs also default to `ensemble_subsets=ensemble_size` (memory-safe mode); override with
+`--ensemble-subsets` in `scripts/run_largest_smoke.py` if needed.
 
 Apply that suggestion before full array submission.
 
