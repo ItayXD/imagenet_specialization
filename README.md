@@ -158,6 +158,7 @@ sbatch scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
 ```
 
 Do not run submit scripts with `bash`; they are SLURM payload scripts and must be launched with `sbatch`.
+Submit from the repository root so `SLURM_SUBMIT_DIR` points to this project (or pass `PROJECT_ROOT=/abs/path/to/repo`).
 
 Supported overrides (via `sbatch` flags):
 

@@ -18,9 +18,18 @@ if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   exit 2
 fi
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="${PROJECT_ROOT:-${SLURM_SUBMIT_DIR:-$(pwd)}}"
+if [[ ! -f "${ROOT_DIR}/pyproject.toml" ]]; then
+  echo "Could not locate project root at ${ROOT_DIR}." >&2
+  echo "Submit from repo root or set PROJECT_ROOT explicitly." >&2
+  exit 2
+fi
 if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
+fi
+
+if [[ "${MANIFEST_PATH}" != /* ]]; then
+  MANIFEST_PATH="${ROOT_DIR}/${MANIFEST_PATH}"
 fi
 
 if [[ ! -f "${MANIFEST_PATH}" ]]; then
