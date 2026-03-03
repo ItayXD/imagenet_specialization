@@ -49,7 +49,7 @@ class TaskReader(TR):
                         training_params=OmegaConf.to_container(config['training_params']),
                         type_=self.task_type,
                         seed=key,
-                        apply_callback=Callbacks.APPLY.value)
+                        apply_callback=Callbacks.APPLY)
         except KeyError:
             raise ValueError('Task not properly configured.')
         return task

@@ -33,8 +33,8 @@ def main() -> None:
         sys.executable,
         'main.py',
         f'experiment={args.experiment}',
-        f'hyperparams.task_list[0].training_params.max_tranches={args.max_tranches}',
-        f'hyperparams.task_list[0].training_params.target_images_seen={args.target_images_seen}',
+        f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
+        f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
     ]
 
     print('Running smoke test command:')
