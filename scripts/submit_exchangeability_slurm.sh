@@ -53,6 +53,15 @@ LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/La
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/exchangeability_${SLURM_ARRAY_JOB_ID}_${TASK_ID}.out") 2>&1
 
+PY_BIN="${UV_PROJECT_ENVIRONMENT}/bin/python"
+if [[ ! -x "${PY_BIN}" ]]; then
+  echo "Missing Python env at ${UV_PROJECT_ENVIRONMENT}" >&2
+  echo "Run once before submitting jobs:" >&2
+  echo "  source scripts/cluster_env.sh && uv sync --extra cluster" >&2
+  exit 2
+fi
+
 echo "Running exchangeability row ${TASK_ID} / ${TOTAL_ROWS} in job ${SLURM_ARRAY_JOB_ID}"
+echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 cd "${ROOT_DIR}"
-uv run --extra cluster python scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"
+"${PY_BIN}" scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"

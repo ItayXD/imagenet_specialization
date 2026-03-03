@@ -29,6 +29,15 @@ LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/La
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/fast_tests_${SLURM_JOB_ID}.out") 2>&1
 
+PY_BIN="${UV_PROJECT_ENVIRONMENT}/bin/python"
+if [[ ! -x "${PY_BIN}" ]]; then
+  echo "Missing Python env at ${UV_PROJECT_ENVIRONMENT}" >&2
+  echo "Run once before submitting jobs:" >&2
+  echo "  source scripts/cluster_env.sh && uv sync --extra cluster" >&2
+  exit 2
+fi
+
 echo "Running fast tests on job ${SLURM_JOB_ID}"
+echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 cd "${ROOT_DIR}"
-uv run --extra cluster pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py
+"${PY_BIN}" -m pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py

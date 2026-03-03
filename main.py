@@ -8,7 +8,7 @@ import hydra
 
 from src.run.save_helpers import copy_results_into_permanent
 
-from src.experiment.names import names
+from src.experiment.names import get_experiment_module
 from src.run.run_tasks import run_tasks
 from src.run import constants
 
@@ -24,7 +24,7 @@ def main(cfg: DictConfig):
     setting = cfg.setting
     try:
         ds_name, model_name = setting['dataset'], setting['model']
-        module_ = names[ds_name, model_name]
+        module_ = get_experiment_module(ds_name, model_name)
     except KeyError:
         raise ValueError('Invalid experimental setting.')
 
@@ -59,4 +59,3 @@ if __name__ == '__main__':
 
 
     
-

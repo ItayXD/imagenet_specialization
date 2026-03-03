@@ -95,7 +95,8 @@ uv python install 3.11
 uv sync --extra cluster
 ```
 
-Run `uv sync --extra cluster` before submitting SLURM jobs; submit scripts use `uv run --extra cluster ...`.
+Run `uv sync --extra cluster` before submitting SLURM jobs; submit scripts execute with `${UV_PROJECT_ENVIRONMENT}/bin/python` and do not resolve/install dependencies at runtime.
+`source scripts/cluster_env.sh` pins `UV_PROJECT_ENVIRONMENT` to `/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/uv_envs/imagenet_specialization-py311` so jobs do not touch home `.venv`.
 
 ## ImageNet Data Setup
 

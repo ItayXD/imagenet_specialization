@@ -34,9 +34,18 @@ LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/La
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/largest_smoke_${SLURM_JOB_ID}.out") 2>&1
 
+PY_BIN="${UV_PROJECT_ENVIRONMENT}/bin/python"
+if [[ ! -x "${PY_BIN}" ]]; then
+  echo "Missing Python env at ${UV_PROJECT_ENVIRONMENT}" >&2
+  echo "Run once before submitting jobs:" >&2
+  echo "  source scripts/cluster_env.sh && uv sync --extra cluster" >&2
+  exit 2
+fi
+
 echo "Running largest smoke timing job ${SLURM_JOB_ID}"
+echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 cd "${ROOT_DIR}"
-uv run --extra cluster python scripts/run_largest_smoke.py \
+"${PY_BIN}" scripts/run_largest_smoke.py \
   --experiment "${EXPERIMENT}" \
   --max-tranches "${MAX_TRANCHES}" \
   --target-images-seen "${TARGET_IMAGES_SEEN}" \
