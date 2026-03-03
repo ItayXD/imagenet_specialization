@@ -9,6 +9,12 @@
 
 set -euo pipefail
 
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  echo "This script must be submitted with sbatch." >&2
+  echo "Usage: sbatch scripts/submit_fast_tests_slurm.sh" >&2
+  exit 2
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"

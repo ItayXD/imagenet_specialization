@@ -11,6 +11,13 @@
 set -euo pipefail
 
 MANIFEST_PATH="${1:-conf/exchangeability_manifest.csv}"
+
+if [[ -z "${SLURM_JOB_ID:-}" ]]; then
+  echo "This script must be submitted with sbatch." >&2
+  echo "Usage: sbatch scripts/submit_exchangeability_slurm.sh [manifest_path]" >&2
+  exit 2
+fi
+
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
