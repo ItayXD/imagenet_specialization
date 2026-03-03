@@ -18,6 +18,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--safety-factor', type=float, default=1.35, help='Multiplier for suggested SLURM time')
     parser.add_argument('--base-dir', default='', help='Optional explicit base_dir override for this smoke run')
     parser.add_argument('--ensemble-subsets', type=int, default=0, help='Override ensemble_subsets for smoke run (0 = auto)')
+    parser.add_argument('--minibatch-size', type=int, default=0, help='Optional minibatch_size override for smoke run')
+    parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch_size override for smoke run')
     return parser.parse_args()
 
 
@@ -41,7 +43,7 @@ def _load_ensemble_size(experiment_name: str) -> int:
 
 def main() -> None:
     args = parse_args()
-    minibatch_size = _load_minibatch_size(args.experiment)
+    minibatch_size = args.minibatch_size if args.minibatch_size > 0 else _load_minibatch_size(args.experiment)
     smoke_images_seen = args.max_tranches * minibatch_size
     stamp = time.strftime('%Y%m%d-%H%M%S')
     default_base = _load_default_base_dir(args.experiment)
@@ -59,10 +61,19 @@ def main() -> None:
         f'base_dir={smoke_base_dir}',
     ]
 
+    if args.minibatch_size > 0:
+        cmd.append(f'hyperparams.task_list.0.training_params.minibatch_size={args.minibatch_size}')
+    if args.microbatch_size > 0:
+        cmd.append(f'hyperparams.task_list.0.training_params.microbatch_size={args.microbatch_size}')
+
     print('Running smoke test command:')
     print(' '.join(cmd))
     print(f'Using smoke base_dir: {smoke_base_dir}')
     print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
+    if args.minibatch_size > 0:
+        print(f'Using smoke minibatch_size: {args.minibatch_size}')
+    if args.microbatch_size > 0:
+        print(f'Using smoke microbatch_size: {args.microbatch_size}')
 
     start = time.time()
     subprocess.run(cmd, check=True)

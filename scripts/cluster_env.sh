@@ -23,3 +23,10 @@ export HUGGINGFACE_HUB_TOKEN="${HUGGINGFACE_HUB_TOKEN:-${HF_TOKEN:-}}"
 export HF_HOME="${HF_HOME:-${EXCHANGEABILITY_ROOT}/hf_cache}"
 export HF_DATASETS_CACHE="${HF_DATASETS_CACHE:-${HF_HOME}/datasets}"
 export HUGGINGFACE_HUB_CACHE="${HUGGINGFACE_HUB_CACHE:-${HF_HOME}/hub}"
+
+# JAX/XLA memory knobs for large-width ImageNet runs.
+export XLA_PYTHON_CLIENT_PREALLOCATE="${XLA_PYTHON_CLIENT_PREALLOCATE:-false}"
+if [[ "${XLA_FLAGS:-}" != *"--xla_gpu_strict_conv_algorithm_picker=false"* ]]; then
+  export XLA_FLAGS="${XLA_FLAGS:-} --xla_gpu_strict_conv_algorithm_picker=false"
+  export XLA_FLAGS="${XLA_FLAGS#" "}"
+fi

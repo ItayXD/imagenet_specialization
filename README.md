@@ -142,6 +142,7 @@ This writes:
 
 - `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
 - width-512 configs default to `ensemble_subsets=4` for memory-safe grouped execution.
+- width-512 configs also default to `minibatch_size=512`, `microbatch_size=64`.
 
 ## Build Manifest
 
@@ -190,6 +191,7 @@ This runs 50 tranches at the largest setting and prints:
 
 Smoke runs also default to `ensemble_subsets=ensemble_size` (memory-safe mode); override with
 `--ensemble-subsets` in `scripts/run_largest_smoke.py` if needed.
+You can also override `--minibatch-size` and `--microbatch-size` for extra memory headroom.
 
 Apply that suggestion before full array submission.
 

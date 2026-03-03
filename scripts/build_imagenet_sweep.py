@@ -42,6 +42,14 @@ def ensemble_subsets_for_width(width: int) -> int:
     return MEMBERS_PER_GROUP if width >= 512 else 1
 
 
+def minibatch_size_for_width(width: int) -> int:
+    return 512 if width >= 512 else 1024
+
+
+def microbatch_size_for_width(width: int) -> int:
+    return 64 if width >= 512 else 128
+
+
 
 def build_p_targets() -> list[int]:
     return [
@@ -83,8 +91,8 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
 
             tp = TrainingParams(
                 eta_0=8e-3,
-                minibatch_size=1024,
-                microbatch_size=128,
+                minibatch_size=minibatch_size_for_width(width),
+                microbatch_size=microbatch_size_for_width(width),
                 num_workers=24,
                 epochs=50,
                 ensemble_subsets=ensemble_subsets_for_width(width),
