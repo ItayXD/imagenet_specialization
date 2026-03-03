@@ -46,4 +46,4 @@ exec > >(tee -a "${LOG_DIR}/exchangeability_${SLURM_ARRAY_JOB_ID}_${TASK_ID}.out
 
 echo "Running exchangeability row ${TASK_ID} / ${TOTAL_ROWS} in job ${SLURM_ARRAY_JOB_ID}"
 cd "${ROOT_DIR}"
-uv run python scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"
+uv run --extra cluster python scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"

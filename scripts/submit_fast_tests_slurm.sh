@@ -26,4 +26,4 @@ exec > >(tee -a "${LOG_DIR}/fast_tests_${SLURM_JOB_ID}.out") 2>&1
 
 echo "Running fast tests on job ${SLURM_JOB_ID}"
 cd "${ROOT_DIR}"
-uv run pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py
+uv run --extra cluster pytest -q test/test_exchangeability_utils.py test/test_manifest_builder.py

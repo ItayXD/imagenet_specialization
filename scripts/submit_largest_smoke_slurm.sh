@@ -31,7 +31,7 @@ exec > >(tee -a "${LOG_DIR}/largest_smoke_${SLURM_JOB_ID}.out") 2>&1
 
 echo "Running largest smoke timing job ${SLURM_JOB_ID}"
 cd "${ROOT_DIR}"
-uv run python scripts/run_largest_smoke.py \
+uv run --extra cluster python scripts/run_largest_smoke.py \
   --experiment "${EXPERIMENT}" \
   --max-tranches "${MAX_TRANCHES}" \
   --target-images-seen "${TARGET_IMAGES_SEEN}" \

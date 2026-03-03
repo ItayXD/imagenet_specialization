@@ -26,4 +26,4 @@ exec > >(tee -a "${LOG_DIR}/largest_smoke_test_${SLURM_JOB_ID}.out") 2>&1
 
 echo "Running largest smoke pytest harness on job ${SLURM_JOB_ID}"
 cd "${ROOT_DIR}"
-RUN_LARGEST_SMOKE=1 uv run pytest -q test/test_largest_smoke_harness.py
+RUN_LARGEST_SMOKE=1 uv run --extra cluster pytest -q test/test_largest_smoke_harness.py

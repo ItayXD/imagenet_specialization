@@ -95,6 +95,8 @@ uv python install 3.11
 uv sync --extra cluster
 ```
 
+Run `uv sync --extra cluster` before submitting SLURM jobs; submit scripts use `uv run --extra cluster ...`.
+
 ## ImageNet Data Setup
 
 This repo includes a Hugging Face ImageNet downloader that exports torchvision-style `train/` and `val/` folders directly under your fixed directory.
