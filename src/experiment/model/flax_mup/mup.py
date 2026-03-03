@@ -41,7 +41,8 @@ class Mup:
                 path[0] = 'mup'
                 path[-1] = 'divisor'
                 k_mup_divisor = ':'.join(path)
-                fdp[k_mup_divisor] *= wm[k]
+                if k_mup_divisor in fdp:
+                    fdp[k_mup_divisor] *= wm[k]
                 if readout_zero_init:
                     fdp[k] *= 0.
                 else:

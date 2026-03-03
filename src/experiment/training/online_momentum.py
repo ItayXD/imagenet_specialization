@@ -182,12 +182,13 @@ def initialize(keys, N: int, num_ensemble_subsets: int, mup, param_dtype):
 
     def train_init(key, inp):
         vars_ = model.init(key, inp, train=True)
-        mup_vars = dict(
-            mup.rescale_parameters({'params': vars_['params']}, width_mults, readout_zero_init),
-            **{'batch_stats': vars_['batch_stats']},
-        )
-        mup_vars.update({'mup': vars_['mup']})
-        return mup_vars
+        # Rescale with full variable tree so readout divisors in `mup` are present.
+        rescaled = mup.rescale_parameters(vars_, width_mults, readout_zero_init)
+        return {
+            'params': rescaled['params'],
+            'batch_stats': vars_['batch_stats'],
+            'mup': rescaled.get('mup', vars_['mup']),
+        }
 
     within_subset_size = keys.shape[0] // num_ensemble_subsets
     sub_keys = keys.reshape((num_ensemble_subsets, within_subset_size, 2))
@@ -199,7 +200,7 @@ def initialize(keys, N: int, num_ensemble_subsets: int, mup, param_dtype):
     )
     fn = jit(ensemble_get_params).lower(
         ShapeDtypeStruct(sub_keys.shape, jnp.uint32),
-        ShapeDtypeStruct(dummy_input.shape, jnp.float32),
+        ShapeDtypeStruct(dummy_input.shape, dummy_input.dtype),
     ).compile()
     return fn(sub_keys, dummy_input)
 
