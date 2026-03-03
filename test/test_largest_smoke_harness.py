@@ -7,12 +7,23 @@ import pytest
 def test_largest_smoke_harness_runs():
     import subprocess
 
+    experiment = os.environ.get('LARGEST_SMOKE_EXPERIMENT', 'exchangeability_w512_g0')
+    max_tranches = os.environ.get('LARGEST_SMOKE_MAX_TRANCHES', '50')
+    minibatch_size = os.environ.get('LARGEST_SMOKE_MINIBATCH_SIZE', '')
+    microbatch_size = os.environ.get('LARGEST_SMOKE_MICROBATCH_SIZE', '')
+
     cmd = [
         sys.executable,
         'scripts/run_largest_smoke.py',
         '--experiment',
-        'exchangeability_w512_g0',
+        experiment,
         '--max-tranches',
-        '50',
+        max_tranches,
     ]
+
+    if minibatch_size:
+        cmd.extend(['--minibatch-size', minibatch_size])
+    if microbatch_size:
+        cmd.extend(['--microbatch-size', microbatch_size])
+
     subprocess.run(cmd, check=True)

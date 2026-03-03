@@ -23,32 +23,40 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def _load_minibatch_size(experiment_name: str) -> int:
+def _load_experiment_cfg(experiment_name: str):
     cfg_path = f'conf/experiment/{experiment_name}.yaml'
-    cfg = OmegaConf.load(cfg_path)
-    return int(cfg.hyperparams.task_list[0].training_params.minibatch_size)
-
-
-def _load_default_base_dir(experiment_name: str) -> str:
-    cfg_path = f'conf/experiment/{experiment_name}.yaml'
-    cfg = OmegaConf.load(cfg_path)
-    return str(cfg.base_dir)
-
-
-def _load_ensemble_size(experiment_name: str) -> int:
-    cfg_path = f'conf/experiment/{experiment_name}.yaml'
-    cfg = OmegaConf.load(cfg_path)
-    return int(cfg.hyperparams.task_list[0].model_params.ensemble_size)
+    return OmegaConf.load(cfg_path)
 
 
 def main() -> None:
     args = parse_args()
-    minibatch_size = args.minibatch_size if args.minibatch_size > 0 else _load_minibatch_size(args.experiment)
+    cfg = _load_experiment_cfg(args.experiment)
+    training_cfg = cfg.hyperparams.task_list[0].training_params
+    model_cfg = cfg.hyperparams.task_list[0].model_params
+    width = int(model_cfg.N)
+
+    cfg_minibatch_size = int(training_cfg.minibatch_size)
+    cfg_microbatch_size = int(training_cfg.microbatch_size)
+
+    if args.minibatch_size > 0:
+        minibatch_size = args.minibatch_size
+    elif width >= 512 and cfg_minibatch_size > 256:
+        minibatch_size = 256
+    else:
+        minibatch_size = cfg_minibatch_size
+
+    if args.microbatch_size > 0:
+        microbatch_size = args.microbatch_size
+    elif width >= 512 and cfg_microbatch_size > 32:
+        microbatch_size = 32
+    else:
+        microbatch_size = cfg_microbatch_size
+
     smoke_images_seen = args.max_tranches * minibatch_size
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    default_base = _load_default_base_dir(args.experiment)
+    default_base = str(cfg.base_dir)
     smoke_base_dir = args.base_dir.strip() or os.path.join(default_base, 'smoke_runs', f'{stamp}-pid{os.getpid()}')
-    ensemble_size = _load_ensemble_size(args.experiment)
+    ensemble_size = int(model_cfg.ensemble_size)
     ensemble_subsets = args.ensemble_subsets if args.ensemble_subsets > 0 else ensemble_size
 
     cmd = [
@@ -58,22 +66,17 @@ def main() -> None:
         f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
         f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
         f'hyperparams.task_list.0.training_params.ensemble_subsets={ensemble_subsets}',
+        f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
+        f'hyperparams.task_list.0.training_params.microbatch_size={microbatch_size}',
         f'base_dir={smoke_base_dir}',
     ]
-
-    if args.minibatch_size > 0:
-        cmd.append(f'hyperparams.task_list.0.training_params.minibatch_size={args.minibatch_size}')
-    if args.microbatch_size > 0:
-        cmd.append(f'hyperparams.task_list.0.training_params.microbatch_size={args.microbatch_size}')
 
     print('Running smoke test command:')
     print(' '.join(cmd))
     print(f'Using smoke base_dir: {smoke_base_dir}')
     print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
-    if args.minibatch_size > 0:
-        print(f'Using smoke minibatch_size: {args.minibatch_size}')
-    if args.microbatch_size > 0:
-        print(f'Using smoke microbatch_size: {args.microbatch_size}')
+    print(f'Using smoke minibatch_size: {minibatch_size}')
+    print(f'Using smoke microbatch_size: {microbatch_size}')
 
     start = time.time()
     subprocess.run(cmd, check=True)

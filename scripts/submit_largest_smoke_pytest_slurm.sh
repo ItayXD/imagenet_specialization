@@ -39,5 +39,9 @@ fi
 
 echo "Running largest smoke pytest harness on job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
+echo "Using smoke minibatch/microbatch: ${LARGEST_SMOKE_MINIBATCH_SIZE:-256}/${LARGEST_SMOKE_MICROBATCH_SIZE:-32}"
 cd "${ROOT_DIR}"
-RUN_LARGEST_SMOKE=1 "${PY_BIN}" -m pytest -q test/test_largest_smoke_harness.py
+RUN_LARGEST_SMOKE=1 \
+LARGEST_SMOKE_MINIBATCH_SIZE="${LARGEST_SMOKE_MINIBATCH_SIZE:-256}" \
+LARGEST_SMOKE_MICROBATCH_SIZE="${LARGEST_SMOKE_MICROBATCH_SIZE:-32}" \
+"${PY_BIN}" -m pytest -q test/test_largest_smoke_harness.py

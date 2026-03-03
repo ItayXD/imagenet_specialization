@@ -11,7 +11,7 @@ set -euo pipefail
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "This script must be submitted with sbatch." >&2
-  echo "Usage: sbatch scripts/submit_largest_smoke_slurm.sh [experiment] [max_tranches] [target_images_seen] [safety_factor]" >&2
+  echo "Usage: sbatch scripts/submit_largest_smoke_slurm.sh [experiment] [max_tranches] [target_images_seen] [safety_factor] [minibatch_size] [microbatch_size]" >&2
   exit 2
 fi
 
@@ -29,6 +29,8 @@ EXPERIMENT="${1:-exchangeability_w512_g0}"
 MAX_TRANCHES="${2:-50}"
 TARGET_IMAGES_SEEN="${3:-10000000}"
 SAFETY_FACTOR="${4:-1.35}"
+MINIBATCH_SIZE="${5:-256}"
+MICROBATCH_SIZE="${6:-32}"
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
@@ -44,9 +46,12 @@ fi
 
 echo "Running largest smoke timing job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
+echo "Using smoke minibatch/microbatch: ${MINIBATCH_SIZE}/${MICROBATCH_SIZE}"
 cd "${ROOT_DIR}"
 "${PY_BIN}" scripts/run_largest_smoke.py \
   --experiment "${EXPERIMENT}" \
   --max-tranches "${MAX_TRANCHES}" \
   --target-images-seen "${TARGET_IMAGES_SEEN}" \
-  --safety-factor "${SAFETY_FACTOR}"
+  --safety-factor "${SAFETY_FACTOR}" \
+  --minibatch-size "${MINIBATCH_SIZE}" \
+  --microbatch-size "${MICROBATCH_SIZE}"
