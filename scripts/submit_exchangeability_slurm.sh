@@ -1,4 +1,13 @@
 #!/usr/bin/env bash
+#SBATCH --job-name=imgnet-exchg
+#SBATCH --account=kempner_pehlevan_lab
+#SBATCH --partition=kempner
+#SBATCH --array=0-19
+#SBATCH --gpus=1
+#SBATCH --cpus-per-task=24
+#SBATCH --mem=128G
+#SBATCH --time=72:00:00
+
 set -euo pipefail
 
 MANIFEST_PATH="${1:-conf/exchangeability_manifest.csv}"
@@ -18,26 +27,16 @@ if [[ ${TOTAL_ROWS} -le 0 ]]; then
   exit 1
 fi
 
-: "${SBATCH_GPUS:=1}"
-: "${SBATCH_CPUS:=24}"
-: "${SBATCH_MEM:=128G}"
-: "${SBATCH_TIME:=72:00:00}"
-: "${SBATCH_ACCOUNT:=kempner_pehlevan_lab}"
-: "${SBATCH_PARTITION:=kempner}"
-: "${PY_LAUNCH:=uv run python}"
+TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
+if [[ ${TASK_ID} -ge ${TOTAL_ROWS} ]]; then
+  echo "Skipping task_id=${TASK_ID}; manifest only has ${TOTAL_ROWS} rows."
+  exit 0
+fi
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
+exec > >(tee -a "${LOG_DIR}/exchangeability_${SLURM_ARRAY_JOB_ID}_${TASK_ID}.out") 2>&1
 
-sbatch \
-  --job-name=imgnet-exchg \
-  --account="${SBATCH_ACCOUNT}" \
-  --partition="${SBATCH_PARTITION}" \
-  --array=0-$((TOTAL_ROWS - 1)) \
-  --gpus=${SBATCH_GPUS} \
-  --cpus-per-task=${SBATCH_CPUS} \
-  --mem=${SBATCH_MEM} \
-  --time=${SBATCH_TIME} \
-  --output="${LOG_DIR}/exchangeability_%A_%a.out" \
-  --export=ALL,MANIFEST_PATH="${MANIFEST_PATH}",ROOT_DIR="${ROOT_DIR}" \
-  --wrap="set -euo pipefail; cd \"\$ROOT_DIR\"; ${PY_LAUNCH} scripts/run_manifest_row.py --manifest \"\$MANIFEST_PATH\" --index \"\$SLURM_ARRAY_TASK_ID\""
+echo "Running exchangeability row ${TASK_ID} / ${TOTAL_ROWS} in job ${SLURM_ARRAY_JOB_ID}"
+cd "${ROOT_DIR}"
+uv run python scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"

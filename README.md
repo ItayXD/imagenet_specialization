@@ -152,16 +152,14 @@ uv run python scripts/build_exchangeability_manifest.py \
 
 ```bash
 source scripts/cluster_env.sh
-bash scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
+sbatch scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
 ```
 
-Supported overrides:
+Supported overrides (via `sbatch` flags):
 
 ```bash
-export SBATCH_GPUS=1
-export SBATCH_CPUS=24
-export SBATCH_MEM=128G
-export SBATCH_TIME=72:00:00
+sbatch --array=0-19 --time=72:00:00 --cpus-per-task=24 --mem=128G --gpus=1 \
+  scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
 ```
 
 Logs default to:
@@ -174,7 +172,7 @@ Use this first to estimate full runtime and tune `SBATCH_TIME`.
 
 ```bash
 source scripts/cluster_env.sh
-bash scripts/submit_largest_smoke_slurm.sh exchangeability_w512_g0 50 10000000 1.35
+sbatch scripts/submit_largest_smoke_slurm.sh exchangeability_w512_g0 50 10000000 1.35
 ```
 
 This runs 50 tranches at the largest setting and prints:
@@ -232,14 +230,14 @@ Fast non-GPU sanity:
 
 ```bash
 source scripts/cluster_env.sh
-bash scripts/submit_fast_tests_slurm.sh
+sbatch scripts/submit_fast_tests_slurm.sh
 ```
 
 Largest smoke pytest harness (GPU, opt-in):
 
 ```bash
 source scripts/cluster_env.sh
-bash scripts/submit_largest_smoke_pytest_slurm.sh
+sbatch scripts/submit_largest_smoke_pytest_slurm.sh
 ```
 
 ## Time Extrapolation
