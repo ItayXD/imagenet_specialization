@@ -3,9 +3,9 @@
 #SBATCH --account=kempner_pehlevan_lab
 #SBATCH --partition=kempner_h100
 #SBATCH --gpus=1
-#SBATCH --cpus-per-task=24
-#SBATCH --mem=128G
-#SBATCH --time=04:00:00
+#SBATCH --cpus-per-task=8
+#SBATCH --mem=48G
+#SBATCH --time=02:00:00
 
 set -euo pipefail
 
@@ -39,9 +39,10 @@ fi
 
 echo "Running largest smoke pytest harness on job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
-echo "Using smoke minibatch/microbatch: ${LARGEST_SMOKE_MINIBATCH_SIZE:-256}/${LARGEST_SMOKE_MICROBATCH_SIZE:-32}"
+echo "Using smoke minibatch/microbatch/workers: ${LARGEST_SMOKE_MINIBATCH_SIZE:-256}/${LARGEST_SMOKE_MICROBATCH_SIZE:-32}/${LARGEST_SMOKE_NUM_WORKERS:-8}"
 cd "${ROOT_DIR}"
 RUN_LARGEST_SMOKE=1 \
 LARGEST_SMOKE_MINIBATCH_SIZE="${LARGEST_SMOKE_MINIBATCH_SIZE:-256}" \
 LARGEST_SMOKE_MICROBATCH_SIZE="${LARGEST_SMOKE_MICROBATCH_SIZE:-32}" \
+LARGEST_SMOKE_NUM_WORKERS="${LARGEST_SMOKE_NUM_WORKERS:-8}" \
 "${PY_BIN}" -m pytest -q test/test_largest_smoke_harness.py

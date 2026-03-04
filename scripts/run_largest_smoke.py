@@ -20,6 +20,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--ensemble-subsets', type=int, default=0, help='Override ensemble_subsets for smoke run (0 = auto)')
     parser.add_argument('--minibatch-size', type=int, default=0, help='Optional minibatch_size override for smoke run')
     parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch_size override for smoke run')
+    parser.add_argument('--num-workers', type=int, default=0, help='Optional DataLoader num_workers override for smoke run')
     return parser.parse_args()
 
 
@@ -37,6 +38,7 @@ def main() -> None:
 
     cfg_minibatch_size = int(training_cfg.minibatch_size)
     cfg_microbatch_size = int(training_cfg.microbatch_size)
+    cfg_num_workers = int(training_cfg.num_workers)
 
     if args.minibatch_size > 0:
         minibatch_size = args.minibatch_size
@@ -51,6 +53,13 @@ def main() -> None:
         microbatch_size = 32
     else:
         microbatch_size = cfg_microbatch_size
+
+    if args.num_workers > 0:
+        num_workers = args.num_workers
+    elif cfg_num_workers > 8:
+        num_workers = 8
+    else:
+        num_workers = cfg_num_workers
 
     smoke_images_seen = args.max_tranches * minibatch_size
     stamp = time.strftime('%Y%m%d-%H%M%S')
@@ -68,6 +77,7 @@ def main() -> None:
         f'hyperparams.task_list.0.training_params.ensemble_subsets={ensemble_subsets}',
         f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
         f'hyperparams.task_list.0.training_params.microbatch_size={microbatch_size}',
+        f'hyperparams.task_list.0.training_params.num_workers={num_workers}',
         f'base_dir={smoke_base_dir}',
     ]
 
@@ -77,6 +87,7 @@ def main() -> None:
     print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
     print(f'Using smoke minibatch_size: {minibatch_size}')
     print(f'Using smoke microbatch_size: {microbatch_size}')
+    print(f'Using smoke num_workers: {num_workers}')
 
     start = time.time()
     subprocess.run(cmd, check=True)
