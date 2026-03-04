@@ -8,7 +8,7 @@ hyperparams:
       eta_0: 0.008
       minibatch_size: 128
       microbatch_size: 128
-      num_workers: 24
+      num_workers: 8
       epochs: 50
       full_batch_gradient: false
       ensemble_subsets: 1

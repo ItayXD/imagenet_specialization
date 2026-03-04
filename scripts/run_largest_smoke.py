@@ -8,6 +8,7 @@ import subprocess
 import time
 import sys
 import re
+import uuid
 
 from omegaconf import OmegaConf
 
@@ -131,11 +132,14 @@ def main() -> None:
     smoke_base_dir = args.base_dir.strip() or os.path.join(default_base, 'smoke_runs', f'{stamp}-pid{os.getpid()}')
     ensemble_size = int(model_cfg.ensemble_size)
     ensemble_subsets = int(training_cfg.ensemble_subsets)
+    base_run_id = str(training_cfg.run_id)
+    smoke_run_id = f'{base_run_id}_smoke_{stamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}'
 
     cmd = [
         sys.executable,
         'main.py',
         f'experiment={args.experiment}',
+        f'hyperparams.task_list.0.training_params.run_id={smoke_run_id}',
         f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
         f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
         f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
@@ -147,6 +151,7 @@ def main() -> None:
     print('Running smoke test command:')
     print(' '.join(cmd))
     print(f'Using smoke base_dir: {smoke_base_dir}')
+    print(f'Using smoke run_id: {smoke_run_id}')
     print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
     print(f'Using smoke minibatch_size: {minibatch_size}')
     print(f'Using smoke microbatch_size: {microbatch_size}')
@@ -310,6 +315,7 @@ def main() -> None:
             'suggested_sbatch_time': f'{hh:02d}:{mm:02d}:{ss:02d}',
             'timing_method_estimates': method_estimates,
             'smoke_base_dir': smoke_base_dir,
+            'smoke_run_id': smoke_run_id,
         }
         for method_name in TIMING_METHODS:
             est = method_estimates.get(method_name)

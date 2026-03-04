@@ -61,6 +61,11 @@ def microbatch_size_for_width(width: int) -> int:
     return 128
 
 
+def num_workers_for_width(width: int) -> int:
+    del width
+    return 8
+
+
 
 def build_p_targets() -> list[int]:
     return [
@@ -107,7 +112,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 eta_0=8e-3,
                 minibatch_size=minibatch_size_for_width(width),
                 microbatch_size=microbatch_size_for_width(width),
-                num_workers=24,
+                num_workers=num_workers_for_width(width),
                 epochs=50,
                 ensemble_subsets=1,
                 use_warmup_cosine_decay=True,
