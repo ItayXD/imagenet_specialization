@@ -11,7 +11,7 @@ hyperparams:
       num_workers: 24
       epochs: 50
       full_batch_gradient: false
-      ensemble_subsets: 4
+      ensemble_subsets: 1
       use_checkpoint: false
       ckpt_dir: ''
       model_ckpt_dir: ''
@@ -44,14 +44,14 @@ hyperparams:
       run_id: exchangeability
       width: 512
       group_id: 3
-      member_group_size: 4
+      member_group_size: 1
       probe_batch_size: 1024
       log_every_tranches: 10
       max_tranches: 0
     model_params:
       BASE_N: 64
       'N': 512
-      ensemble_size: 4
+      ensemble_size: 1
       dtype: bfloat16
     seed: 731389765
   data_params:

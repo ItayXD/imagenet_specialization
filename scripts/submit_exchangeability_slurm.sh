@@ -2,7 +2,7 @@
 #SBATCH --job-name=imgnet-exchg
 #SBATCH --account=kempner_pehlevan_lab
 #SBATCH --partition=kempner
-#SBATCH --array=0-19
+#SBATCH --array=0-31
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=128G

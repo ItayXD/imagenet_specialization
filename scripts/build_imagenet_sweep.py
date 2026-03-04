@@ -23,8 +23,8 @@ CONFIG_DIR = '../conf/experiment'
 CONFIG_NAME = 'exchangeability_w{width}_g{group_id}.yaml'
 
 WIDTHS = (32, 64, 128, 256, 512)
-NUM_GROUPS = 4
-MEMBERS_PER_GROUP = 4
+TARGET_MEMBERS_PER_WIDTH = 16
+DEFAULT_MEMBERS_PER_GROUP = 4
 
 DEFAULT_CLUSTER_ROOT = os.environ.get(
     'EXCHANGEABILITY_ROOT',
@@ -38,8 +38,20 @@ WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 
 
 def ensemble_subsets_for_width(width: int) -> int:
-    # Keep full vectorization for smaller widths, split width-512 for memory safety.
-    return MEMBERS_PER_GROUP if width >= 512 else 1
+    # Subsets partition compute for already-resident ensemble states.
+    # Keep this at 1; width-512 memory safety is handled by setting ensemble_size=1.
+    return 1
+
+
+def members_per_group_for_width(width: int) -> int:
+    if width >= 512:
+        return 1
+    return DEFAULT_MEMBERS_PER_GROUP
+
+
+def num_groups_for_width(width: int) -> int:
+    members_per_group = members_per_group_for_width(width)
+    return TARGET_MEMBERS_PER_WIDTH // members_per_group
 
 
 def minibatch_size_for_width(width: int) -> int:
@@ -86,7 +98,10 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
     outputs: list[tuple[str, str]] = []
 
     for width in WIDTHS:
-        for group_id in range(NUM_GROUPS):
+        members_per_group = members_per_group_for_width(width)
+        num_groups = num_groups_for_width(width)
+
+        for group_id in range(num_groups):
             task_seed = rng.randrange(0, 10**9)
 
             tp = TrainingParams(
@@ -106,7 +121,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 run_id=RUN_ID,
                 width=width,
                 group_id=group_id,
-                member_group_size=MEMBERS_PER_GROUP,
+                member_group_size=members_per_group,
                 probe_batch_size=1024,
                 log_every_tranches=10,
                 max_tranches=0,
@@ -115,7 +130,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
             mp = ModelParams(
                 BASE_N=64,
                 N=width,
-                ensemble_size=MEMBERS_PER_GROUP,
+                ensemble_size=members_per_group,
                 dtype='bfloat16',
             )
 

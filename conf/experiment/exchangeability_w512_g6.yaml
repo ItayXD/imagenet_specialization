@@ -43,7 +43,7 @@ hyperparams:
       wandb_mode: online
       run_id: exchangeability
       width: 512
-      group_id: 1
+      group_id: 6
       member_group_size: 1
       probe_batch_size: 1024
       log_every_tranches: 10
@@ -53,10 +53,10 @@ hyperparams:
       'N': 512
       ensemble_size: 1
       dtype: bfloat16
-    seed: 741674657
+    seed: 842239768
   data_params:
     P: 1281167
     data_seed: 2423
     root_dir: data-dir
     val_P: 1024
-base_dir: /n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_runs/w512/g1
+base_dir: /n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_runs/w512/g6

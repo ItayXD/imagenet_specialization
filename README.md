@@ -10,8 +10,8 @@ This repository now implements:
 2. Manuscript LR shape: warmup `8e-5 -> 8e-3` then cosine decay `8e-3 -> 8e-5`.
 3. Width sweep with grouped ensembles:
 1. widths `N in [32, 64, 128, 256, 512]`
-2. 4 groups per width
-3. 4 members per group
+2. widths 32/64/128/256: 4 groups x 4 members
+3. width 512: 16 groups x 1 member (memory-safe on 40GB A100)
 4. total `M=16` members per width
 4. Target checkpoint points: 15 deterministic log-spaced `P` values (`1e5` to `1e7`).
 5. Exchangeability analysis for:
@@ -131,7 +131,7 @@ Optional debug caps:
 1. `IMAGENET_MAX_TRAIN=<num>`
 2. `IMAGENET_MAX_VAL=<num>`
 
-## Generate Experiment Configs (20 Jobs)
+## Generate Experiment Configs (32 Jobs)
 
 ```bash
 source scripts/cluster_env.sh
@@ -141,8 +141,9 @@ uv run python scripts/build_imagenet_sweep.py
 This writes:
 
 - `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
-- width-512 configs default to `ensemble_subsets=4` for memory-safe grouped execution.
-- width-512 configs also default to `minibatch_size=512`, `microbatch_size=64`.
+- width-512 configs default to `ensemble_size=1`, `ensemble_subsets=1`.
+- width-512 configs default to `minibatch_size=128`, `microbatch_size=16`.
+- other widths keep grouped `ensemble_size=4`.
 
 ## Build Manifest
 
@@ -166,7 +167,7 @@ Submit from the repository root so `SLURM_SUBMIT_DIR` points to this project (or
 Supported overrides (via `sbatch` flags):
 
 ```bash
-sbatch --array=0-19 --time=72:00:00 --cpus-per-task=24 --mem=128G --gpus=1 \
+sbatch --array=0-31 --time=72:00:00 --cpus-per-task=24 --mem=128G --gpus=1 \
   scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
 ```
 
@@ -189,9 +190,9 @@ This runs 50 tranches at the largest setting and prints:
 2. `estimated_full_hours`
 3. `suggested_sbatch_time`
 
-Smoke runs also default to `ensemble_subsets=ensemble_size` (memory-safe mode); override with
-`--ensemble-subsets` in `scripts/run_largest_smoke.py` if needed.
-You can also override `--minibatch-size` and `--microbatch-size` for extra memory headroom.
+Smoke runs default to width-512-safe overrides:
+`ensemble_subsets=1`, `minibatch_size=128`, `microbatch_size=16`.
+You can still override with `--ensemble-subsets`, `--minibatch-size`, and `--microbatch-size`.
 
 Apply that suggestion before full array submission.
 
