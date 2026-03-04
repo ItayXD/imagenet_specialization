@@ -69,6 +69,36 @@ def _list_width_dirs(base_save_dir: str, run_id: str) -> dict[int, str]:
 
 
 
+def _resolve_run_id(base_save_dir: str, run_id: str) -> str:
+    exact_dir = join(base_save_dir, run_id)
+    if os.path.isdir(exact_dir):
+        return run_id
+
+    if not os.path.isdir(base_save_dir):
+        raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
+
+    prefix = f'{run_id}_'
+    candidates = []
+    for name in os.listdir(base_save_dir):
+        path = join(base_save_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if not name.startswith(prefix):
+            continue
+        candidates.append((os.path.getmtime(path), name))
+
+    if not candidates:
+        raise FileNotFoundError(
+            f'Run id "{run_id}" not found under {base_save_dir}, and no "{prefix}*" runs were found.'
+        )
+
+    candidates.sort(key=lambda x: x[0])
+    resolved = candidates[-1][1]
+    print(f'Run id "{run_id}" not found. Using latest matching run "{resolved}".')
+    return resolved
+
+
+
 def _list_group_dirs(width_dir: str) -> list[str]:
     return sorted(glob(join(width_dir, 'group_*')))
 
@@ -413,9 +443,16 @@ def write_rows(rows: list[dict], output_csv: str) -> None:
 def main() -> None:
     args = parse_args()
 
-    width_dirs = _list_width_dirs(args.base_save_dir, args.run_id)
+    resolved_run_id = _resolve_run_id(args.base_save_dir, args.run_id)
+    width_dirs = _list_width_dirs(args.base_save_dir, resolved_run_id)
+    if not width_dirs:
+        raise RuntimeError(
+            f'No width directories found for run_id="{resolved_run_id}" under {args.base_save_dir}.'
+        )
     if args.widths:
         width_dirs = {w: d for w, d in width_dirs.items() if w in set(args.widths)}
+    if not width_dirs:
+        raise RuntimeError(f'No matching widths found for requested filter: {args.widths}')
 
     probe_loader = _build_probe_loader(args.probe_batch_size, args.probe_seed, args.probe_loader_batch_size)
     rng = np.random.default_rng(args.probe_seed)

@@ -366,7 +366,9 @@ def train(
                     ckpt_dir=run_paths['state_ckpt_dir'],
                     target=state,
                     step=int(target_p),
-                    overwrite=False,
+                    # Re-running the same width/group writes identical step names
+                    # (e.g. state_100000), so allow replacement instead of crashing.
+                    overwrite=True,
                     keep=1_000_000,
                     prefix='state_',
                     orbax_checkpointer=checkpointer,

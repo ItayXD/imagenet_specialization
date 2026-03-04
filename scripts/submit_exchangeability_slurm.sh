@@ -64,4 +64,13 @@ fi
 echo "Running exchangeability row ${TASK_ID} / ${TOTAL_ROWS} in job ${SLURM_ARRAY_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 cd "${ROOT_DIR}"
-"${PY_BIN}" scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"
+
+RUN_ID_SUFFIX="${RUN_ID_SUFFIX-job${SLURM_ARRAY_JOB_ID}}"
+CMD=("${PY_BIN}" scripts/run_manifest_row.py --manifest "${MANIFEST_PATH}" --index "${TASK_ID}")
+if [[ -n "${RUN_ID_SUFFIX}" ]]; then
+  echo "Using run_id suffix: ${RUN_ID_SUFFIX}"
+  CMD+=(--run-id-suffix "${RUN_ID_SUFFIX}")
+else
+  echo "RUN_ID_SUFFIX empty; using run_id from experiment config."
+fi
+"${CMD[@]}"

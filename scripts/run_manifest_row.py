@@ -12,6 +12,11 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run a single manifest row by index.')
     parser.add_argument('--manifest', required=True, help='Manifest CSV path')
     parser.add_argument('--index', required=True, type=int, help='0-based row index')
+    parser.add_argument(
+        '--run-id-suffix',
+        default='',
+        help='Optional suffix appended to manifest wandb_group for a unique training_params.run_id.',
+    )
     return parser.parse_args()
 
 
@@ -29,6 +34,14 @@ def main() -> None:
     experiment_name = row['experiment_name']
 
     cmd = [sys.executable, 'main.py', f'experiment={experiment_name}']
+
+    run_id_suffix = args.run_id_suffix.strip()
+    if run_id_suffix:
+        base_run_id = str(row.get('wandb_group', '')).strip() or 'exchangeability'
+        run_id = f'{base_run_id}_{run_id_suffix}'
+        cmd.append(f'hyperparams.task_list.0.training_params.run_id={run_id}')
+        print(f'Using run_id override: {run_id}')
+
     print('Running:', ' '.join(cmd))
     subprocess.run(cmd, check=True)
 
