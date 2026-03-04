@@ -6,15 +6,19 @@ import csv
 import json
 import os
 import re
+import sys
+import time
 from collections import defaultdict
 from glob import glob
 from os.path import join
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 from flax.training import checkpoints
 from torch.utils.data import DataLoader, Subset
+from tqdm.auto import tqdm
 from torchvision.datasets import ImageFolder, ImageNet
 import torchvision.transforms as transforms
 
@@ -46,8 +50,19 @@ def parse_args() -> argparse.Namespace:
         default=100,
         help='Print shuffle progress every N iterations (<=0 disables periodic shuffle logs)',
     )
+    parser.add_argument(
+        '--write-every-shuffles',
+        type=int,
+        default=1,
+        help='Flush CSV rows every N shuffles (<=0 disables periodic mid-representation writes)',
+    )
     parser.add_argument('--probe-batch-size', type=int, default=1024, help='Total probe images for activation vectors')
-    parser.add_argument('--probe-loader-batch-size', type=int, default=1, help='Probe dataloader batch size used for streaming accumulation')
+    parser.add_argument(
+        '--probe-loader-batch-size',
+        type=int,
+        default=128,
+        help='Probe dataloader batch size used for streaming accumulation',
+    )
     parser.add_argument('--probe-seed', type=int, default=1234, help='Seed for probe subset selection')
     parser.add_argument('--widths', type=int, nargs='*', default=None, help='Optional list of widths to analyze')
     return parser.parse_args()
@@ -142,7 +157,15 @@ def _collect_target_steps(group_dirs: list[str]) -> list[int]:
     if not group_dirs:
         return []
     common = None
-    for d in group_dirs:
+    group_iter = tqdm(
+        group_dirs,
+        desc='collect-target-steps',
+        total=len(group_dirs),
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+    for d in group_iter:
         s = _list_state_steps(d)
         common = s if common is None else (common & s)
     return sorted(common) if common is not None else []
@@ -251,6 +274,13 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
         dataset = ImageFolder(val_split_dir, transform=val_transform)
     else:
         dataset = ImageNet(IMAGENET_FOLDER, 'val', transform=val_transform)
+    if probe_batch_size <= 0:
+        raise ValueError('probe_batch_size must be positive.')
+    if probe_loader_batch_size <= 0:
+        raise ValueError('probe_loader_batch_size must be positive.')
+
+    probe_loader_batch_size = min(probe_loader_batch_size, probe_batch_size)
+
     rng = np.random.default_rng(probe_seed)
     indices = rng.choice(len(dataset), size=probe_batch_size, replace=False)
     subset = Subset(dataset, indices.tolist())
@@ -280,7 +310,12 @@ def _safe_cos_from_grams(gram: np.ndarray, norm_left: np.ndarray, norm_right: np
 
 
 
-def _activation_similarity_matrix(member_variables: list[dict], width: int, probe_loader) -> np.ndarray:
+def _activation_similarity_matrix(
+    member_variables: list[dict],
+    width: int,
+    probe_loader,
+    progress_label: str = '',
+) -> np.ndarray:
     num_members = len(member_variables)
     if num_members == 0:
         raise ValueError('No member variables found for activation analysis.')
@@ -289,20 +324,35 @@ def _activation_similarity_matrix(member_variables: list[dict], width: int, prob
     param_dtype = jnp.asarray(leaf).dtype
     model = ResNet18(num_classes=1000, num_filters=width, param_dtype=param_dtype)
 
-    self_grams = [np.zeros((width, width), dtype=np.float64) for _ in range(num_members)]
+    self_grams = [jnp.zeros((width, width), dtype=jnp.float32) for _ in range(num_members)]
     cross_grams = {}
     for e in range(num_members):
         for f in range(e + 1, num_members):
-            cross_grams[(e, f)] = np.zeros((width, width), dtype=np.float64)
+            cross_grams[(e, f)] = jnp.zeros((width, width), dtype=jnp.float32)
 
-    for batch in probe_loader:
+    batch_iter = tqdm(
+        probe_loader,
+        desc=f'{progress_label} probe-batches',
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+    for batch in batch_iter:
         batch_x, _ = batch
-        x = jnp.array(batch_x)
+        x = jnp.asarray(batch_x)
 
         member_features = []
-        for vars_ in member_variables:
+        member_iter = tqdm(
+            member_variables,
+            desc=f'{progress_label} members',
+            total=num_members,
+            dynamic_ncols=True,
+            leave=False,
+            file=sys.stdout,
+        )
+        for vars_ in member_iter:
             conv_out = _extract_conv_init_output(model, vars_, x)
-            feat = np.asarray(conv_out, dtype=np.float32).reshape((-1, width))
+            feat = jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, width))
             member_features.append(feat)
 
         for e in range(num_members):
@@ -315,7 +365,9 @@ def _activation_similarity_matrix(member_variables: list[dict], width: int, prob
                 ff = member_features[f]
                 cross_grams[(e, f)] += fe.T @ ff
 
-    norms = [np.sqrt(np.maximum(np.diag(g), 1e-12)) for g in self_grams]
+    self_grams_np = [np.asarray(g, dtype=np.float64) for g in self_grams]
+    cross_grams_np = {k: np.asarray(v, dtype=np.float64) for k, v in cross_grams.items()}
+    norms = [np.sqrt(np.maximum(np.diag(g), 1e-12)) for g in self_grams_np]
 
     total = num_members * width
     sim = np.zeros((total, total), dtype=np.float64)
@@ -323,13 +375,13 @@ def _activation_similarity_matrix(member_variables: list[dict], width: int, prob
     for e in range(num_members):
         e_start = e * width
         e_end = e_start + width
-        block = _safe_cos_from_grams(self_grams[e], norms[e], norms[e])
+        block = _safe_cos_from_grams(self_grams_np[e], norms[e], norms[e])
         sim[e_start:e_end, e_start:e_end] = block
 
         for f in range(e + 1, num_members):
             f_start = f * width
             f_end = f_start + width
-            cross = _safe_cos_from_grams(cross_grams[(e, f)], norms[e], norms[f])
+            cross = _safe_cos_from_grams(cross_grams_np[(e, f)], norms[e], norms[f])
             sim[e_start:e_end, f_start:f_end] = cross
             sim[f_start:f_end, e_start:e_end] = cross.T
 
@@ -343,9 +395,16 @@ def _weight_similarity_matrix(weights: np.ndarray) -> np.ndarray:
 
 
 
-def _collect_member_states(group_dirs: list[str], step: int) -> list[dict]:
+def _collect_member_states(group_dirs: list[str], step: int, progress_label: str = '') -> list[dict]:
     members = []
-    for group_dir in group_dirs:
+    group_iter = tqdm(
+        group_dirs,
+        desc=f'{progress_label} restore-groups',
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+    for group_dir in group_iter:
         state_dir = join(group_dir, 'state_ckpts')
         state_obj = checkpoints.restore_checkpoint(
             ckpt_dir=state_dir,
@@ -367,57 +426,71 @@ def _analysis_rows_for_similarity(
     metric_payload: dict,
     representation: str,
     log_every_shuffles: int,
+    write_every_shuffles: int,
+    row_callback: Callable[[list[dict]], None] | None = None,
 ):
     rows = []
+    pending_rows: list[dict] = []
     member_ids = build_member_ids(num_members, width)
     across_real = extract_across_values(similarity_matrix, member_ids)
     within_real = extract_within_values(similarity_matrix, member_ids)
 
     # Analysis B observed: within_real vs across_real
     diag_stats = ks_w1_stats(within_real, across_real)
-    rows.append(
-        {
-            **metric_payload,
-            'representation': representation,
-            'analysis_type': 'within_vs_across_real',
-            'shuffle_id': -1,
-            'ks_distance': diag_stats['ks_distance'],
-            'ks_p_raw': diag_stats['ks_pvalue'],
-            'ks_sigma_two_sided': two_sided_sigma_from_p(diag_stats['ks_pvalue']),
-            'w1_distance': diag_stats['w1_distance'],
-        }
-    )
+    diag_row = {
+        **metric_payload,
+        'representation': representation,
+        'analysis_type': 'within_vs_across_real',
+        'shuffle_id': -1,
+        'ks_distance': diag_stats['ks_distance'],
+        'ks_p_raw': diag_stats['ks_pvalue'],
+        'ks_sigma_two_sided': two_sided_sigma_from_p(diag_stats['ks_pvalue']),
+        'w1_distance': diag_stats['w1_distance'],
+    }
+    rows.append(diag_row)
+    pending_rows.append(diag_row)
+    if row_callback is not None and write_every_shuffles <= 0:
+        row_callback(pending_rows)
+        pending_rows = []
 
-    for shuffle_id in range(shuffle_repeats):
+    shuffle_iter = tqdm(
+        range(shuffle_repeats),
+        desc=f"w{metric_payload['width']} p{metric_payload['images_seen']} {representation} shuffles",
+        total=shuffle_repeats,
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+    for shuffle_id in shuffle_iter:
         across_shuf, within_shuf = shuffled_similarity_values(similarity_matrix, num_members, width, rng)
 
         baseline_stats = ks_w1_stats(across_real, across_shuf)
-        rows.append(
-            {
-                **metric_payload,
-                'representation': representation,
-                'analysis_type': 'across_real_vs_across_shuffled',
-                'shuffle_id': shuffle_id,
-                'ks_distance': baseline_stats['ks_distance'],
-                'ks_p_raw': baseline_stats['ks_pvalue'],
-                'ks_sigma_two_sided': two_sided_sigma_from_p(baseline_stats['ks_pvalue']),
-                'w1_distance': baseline_stats['w1_distance'],
-            }
-        )
+        baseline_row = {
+            **metric_payload,
+            'representation': representation,
+            'analysis_type': 'across_real_vs_across_shuffled',
+            'shuffle_id': shuffle_id,
+            'ks_distance': baseline_stats['ks_distance'],
+            'ks_p_raw': baseline_stats['ks_pvalue'],
+            'ks_sigma_two_sided': two_sided_sigma_from_p(baseline_stats['ks_pvalue']),
+            'w1_distance': baseline_stats['w1_distance'],
+        }
+        rows.append(baseline_row)
+        pending_rows.append(baseline_row)
 
         diag_shuffle_stats = ks_w1_stats(within_shuf, across_real)
-        rows.append(
-            {
-                **metric_payload,
-                'representation': representation,
-                'analysis_type': 'within_shuffled_vs_across_real',
-                'shuffle_id': shuffle_id,
-                'ks_distance': diag_shuffle_stats['ks_distance'],
-                'ks_p_raw': diag_shuffle_stats['ks_pvalue'],
-                'ks_sigma_two_sided': two_sided_sigma_from_p(diag_shuffle_stats['ks_pvalue']),
-                'w1_distance': diag_shuffle_stats['w1_distance'],
-            }
-        )
+        diag_shuffle_row = {
+            **metric_payload,
+            'representation': representation,
+            'analysis_type': 'within_shuffled_vs_across_real',
+            'shuffle_id': shuffle_id,
+            'ks_distance': diag_shuffle_stats['ks_distance'],
+            'ks_p_raw': diag_shuffle_stats['ks_pvalue'],
+            'ks_sigma_two_sided': two_sided_sigma_from_p(diag_shuffle_stats['ks_pvalue']),
+            'w1_distance': diag_shuffle_stats['w1_distance'],
+        }
+        rows.append(diag_shuffle_row)
+        pending_rows.append(diag_shuffle_row)
 
         if (
             log_every_shuffles > 0
@@ -428,13 +501,32 @@ def _analysis_rows_for_similarity(
                 f"rep={representation}: shuffles {shuffle_id + 1}/{shuffle_repeats}"
             )
 
+        if (
+            row_callback is not None
+            and write_every_shuffles > 0
+            and ((shuffle_id + 1) % write_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
+        ):
+            row_callback(pending_rows)
+            pending_rows = []
+
+    if row_callback is not None and pending_rows:
+        row_callback(pending_rows)
+
     return rows
 
 
 
 def _aggregate_metrics(group_dirs: list[str]) -> dict[int, dict]:
     by_step = defaultdict(list)
-    for group_dir in group_dirs:
+    group_iter = tqdm(
+        group_dirs,
+        desc='aggregate-metrics',
+        total=len(group_dirs),
+        dynamic_ncols=True,
+        leave=False,
+        file=sys.stdout,
+    )
+    for group_dir in group_iter:
         gm = _load_group_metrics(group_dir)
         for step, row in gm.items():
             by_step[step].append(row)
@@ -521,15 +613,29 @@ def main() -> None:
         writer.writeheader()
         f_out.flush()
 
-        for width, width_dir in sorted(width_dirs.items()):
+        width_iter = tqdm(
+            sorted(width_dirs.items()),
+            desc='widths',
+            total=len(width_dirs),
+            dynamic_ncols=True,
+            file=sys.stdout,
+        )
+        for width, width_dir in width_iter:
             group_dirs = _list_group_dirs(width_dir)
             if not group_dirs:
                 continue
 
             common_steps = _collect_target_steps(group_dirs)
             metrics_by_step = _aggregate_metrics(group_dirs)
-
-            for step in common_steps:
+            step_iter = tqdm(
+                common_steps,
+                desc=f'width={width} steps',
+                total=len(common_steps),
+                dynamic_ncols=True,
+                leave=False,
+                file=sys.stdout,
+            )
+            for step in step_iter:
                 metric_payload = {
                     'width': width,
                     'images_seen': step,
@@ -539,49 +645,69 @@ def main() -> None:
                     'val_error': metrics_by_step.get(step, {}).get('val_error', np.nan),
                 }
 
-                step_rows: list[dict] = []
+                rows_step = 0
 
                 # weights
+                t0 = time.time()
+                print(f'Starting width={width} step={step} rep=weights')
                 weight_chunks = [_extract_weights_from_artifacts(g, step) for g in group_dirs]
                 weights = np.concatenate(weight_chunks, axis=0)
                 num_members = weights.shape[0]
                 weight_sim = _weight_similarity_matrix(weights)
-                step_rows.extend(
-                    _analysis_rows_for_similarity(
-                        similarity_matrix=weight_sim,
-                        num_members=num_members,
-                        width=width,
-                        shuffle_repeats=args.shuffle_repeats,
-                        rng=rng,
-                        metric_payload=metric_payload,
-                        representation='weights',
-                        log_every_shuffles=args.log_every_shuffles,
-                    )
+                weight_rows = _analysis_rows_for_similarity(
+                    similarity_matrix=weight_sim,
+                    num_members=num_members,
+                    width=width,
+                    shuffle_repeats=args.shuffle_repeats,
+                    rng=rng,
+                    metric_payload=metric_payload,
+                    representation='weights',
+                    log_every_shuffles=args.log_every_shuffles,
+                    write_every_shuffles=args.write_every_shuffles,
+                    row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
+                )
+                rows_written += len(weight_rows)
+                rows_step += len(weight_rows)
+                print(
+                    f'Completed width={width} step={step} rep=weights '
+                    f'rows_rep={len(weight_rows)} rows_written={rows_written} '
+                    f'elapsed_s={(time.time() - t0):.2f}'
                 )
 
                 # activations
-                member_states = _collect_member_states(group_dirs, step)
-                act_sim = _activation_similarity_matrix(member_states, width, probe_loader)
-                step_rows.extend(
-                    _analysis_rows_for_similarity(
-                        similarity_matrix=act_sim,
-                        num_members=len(member_states),
-                        width=width,
-                        shuffle_repeats=args.shuffle_repeats,
-                        rng=rng,
-                        metric_payload=metric_payload,
-                        representation='activations',
-                        log_every_shuffles=args.log_every_shuffles,
-                    )
+                t1 = time.time()
+                print(f'Starting width={width} step={step} rep=activations')
+                member_states = _collect_member_states(group_dirs, step, progress_label=f'w{width} p{step}')
+                t2 = time.time()
+                act_sim = _activation_similarity_matrix(
+                    member_states,
+                    width,
+                    probe_loader,
+                    progress_label=f'w{width} p{step}',
                 )
-
-                writer.writerows(step_rows)
-                rows_written += len(step_rows)
-                f_out.flush()
+                activation_rows = _analysis_rows_for_similarity(
+                    similarity_matrix=act_sim,
+                    num_members=len(member_states),
+                    width=width,
+                    shuffle_repeats=args.shuffle_repeats,
+                    rng=rng,
+                    metric_payload=metric_payload,
+                    representation='activations',
+                    log_every_shuffles=args.log_every_shuffles,
+                    write_every_shuffles=args.write_every_shuffles,
+                    row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
+                )
+                rows_written += len(activation_rows)
+                rows_step += len(activation_rows)
+                print(
+                    f'Completed width={width} step={step} rep=activations '
+                    f'rows_rep={len(activation_rows)} rows_written={rows_written} '
+                    f'restore_s={(t2 - t1):.2f} activation_sim_s={(time.time() - t2):.2f}'
+                )
 
                 print(
                     f'Analyzed width={width} step={step} '
-                    f'rows_step={len(step_rows)} rows_written={rows_written}'
+                    f'rows_step={rows_step} rows_written={rows_written}'
                 )
 
     print(f'Wrote {rows_written} rows to {args.output_csv}')
