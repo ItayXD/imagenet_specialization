@@ -30,7 +30,7 @@ MAX_TRANCHES="${2:-50}"
 TARGET_IMAGES_SEEN="${3:-10000000}"
 SAFETY_FACTOR="${4:-1.35}"
 MINIBATCH_SIZE="${5:-128}"
-MICROBATCH_SIZE="${6:-16}"
+MICROBATCH_SIZE="${6:-128}"
 NUM_WORKERS="${7:-4}"
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"

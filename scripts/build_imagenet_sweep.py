@@ -59,7 +59,7 @@ def minibatch_size_for_width(width: int) -> int:
 
 
 def microbatch_size_for_width(width: int) -> int:
-    return 16 if width >= 512 else 128
+    return 128 if width >= 512 else 128
 
 
 

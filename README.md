@@ -41,8 +41,11 @@ This repository now implements:
 - `scripts/download_imagenet.sh`
 - `scripts/download_imagenet_hf.py`
 - `scripts/submit_exchangeability_slurm.sh`
+- `scripts/submit_timing_sweep_slurm.sh`
 - `scripts/run_largest_smoke.py`
+- `scripts/run_timing_manifest_row.py`
 - `scripts/submit_largest_smoke_slurm.sh`
+- `scripts/summarize_timing_sweep.py`
 - `scripts/analyze_exchangeability.py`
 - `scripts/plot_exchangeability.py`
 - `notebooks/exchangeability_analysis.ipynb`
@@ -142,7 +145,7 @@ This writes:
 
 - `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
 - width-512 configs default to `ensemble_size=1`, `ensemble_subsets=1`.
-- width-512 configs default to `minibatch_size=128`, `microbatch_size=16`.
+- width-512 configs default to `minibatch_size=128`, `microbatch_size=128`.
 - other widths keep grouped `ensemble_size=4`.
 
 ## Build Manifest
@@ -191,10 +194,32 @@ This runs 50 tranches at the largest setting and prints:
 3. `suggested_sbatch_time`
 
 Smoke runs default to width-512-safe overrides:
-`ensemble_subsets=1`, `minibatch_size=128`, `microbatch_size=16`.
+`ensemble_subsets=1`, `minibatch_size=128`, `microbatch_size=128`.
 You can still override with `--ensemble-subsets`, `--minibatch-size`, and `--microbatch-size`.
 
 Apply that suggestion before full array submission.
+
+## Timing Sweep For All Jobs (Submit with `sbatch`)
+
+Run a short pilot for each manifest row to estimate per-job runtime:
+
+```bash
+source scripts/cluster_env.sh
+sbatch scripts/submit_timing_sweep_slurm.sh conf/exchangeability_manifest.csv 20 10000000 1.35 4
+```
+
+After the sweep completes, summarize recommendations:
+
+```bash
+source scripts/cluster_env.sh
+uv run python scripts/summarize_timing_sweep.py \
+  --summary-dir "$BASE_SAVE_DIR/timing_sweep"
+```
+
+Outputs:
+
+1. `$BASE_SAVE_DIR/timing_sweep/timing_estimates.csv` (per job)
+2. `$BASE_SAVE_DIR/timing_sweep/timing_by_width.csv` (recommended `--time` per width)
 
 ## Analysis
 

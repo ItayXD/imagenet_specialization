@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import subprocess
 import time
@@ -21,6 +22,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--minibatch-size', type=int, default=0, help='Optional minibatch_size override for smoke run')
     parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch_size override for smoke run')
     parser.add_argument('--num-workers', type=int, default=0, help='Optional DataLoader num_workers override for smoke run')
+    parser.add_argument('--summary-json', default='', help='Optional JSON path for writing timing summary')
     return parser.parse_args()
 
 
@@ -49,8 +51,8 @@ def main() -> None:
 
     if args.microbatch_size > 0:
         microbatch_size = args.microbatch_size
-    elif width >= 512 and cfg_microbatch_size > 16:
-        microbatch_size = 16
+    elif width >= 512 and cfg_microbatch_size > 128:
+        microbatch_size = 128
     else:
         microbatch_size = cfg_microbatch_size
 
@@ -114,6 +116,34 @@ def main() -> None:
     print(f'estimated_full_hours={est_full_h:.2f}')
     print(f'estimated_full_hours_with_safety={est_with_safety_h:.2f} (safety_factor={args.safety_factor})')
     print(f'suggested_sbatch_time={hh:02d}:{mm:02d}:{ss:02d}')
+
+    if args.summary_json:
+        summary_dir = os.path.dirname(args.summary_json)
+        if summary_dir:
+            os.makedirs(summary_dir, exist_ok=True)
+        summary = {
+            'experiment': args.experiment,
+            'width': width,
+            'group_id': int(training_cfg.group_id),
+            'ensemble_size': ensemble_size,
+            'ensemble_subsets': ensemble_subsets,
+            'max_tranches': args.max_tranches,
+            'target_images_seen': args.target_images_seen,
+            'minibatch_size': minibatch_size,
+            'microbatch_size': microbatch_size,
+            'num_workers': num_workers,
+            'elapsed_seconds': elapsed_s,
+            'smoke_images_seen': smoke_images_seen,
+            'images_per_second': images_per_s,
+            'estimated_full_hours': est_full_h,
+            'estimated_full_hours_with_safety': est_with_safety_h,
+            'safety_factor': args.safety_factor,
+            'suggested_sbatch_time': f'{hh:02d}:{mm:02d}:{ss:02d}',
+            'smoke_base_dir': smoke_base_dir,
+        }
+        with open(args.summary_json, 'w', encoding='utf-8') as f:
+            json.dump(summary, f, indent=2, sort_keys=True)
+        print(f'Wrote timing summary JSON: {args.summary_json}')
 
 
 if __name__ == '__main__':

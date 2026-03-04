@@ -39,7 +39,7 @@ fi
 
 echo "Running largest smoke pytest harness on job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
-echo "Using smoke minibatch/microbatch/workers: ${LARGEST_SMOKE_MINIBATCH_SIZE:-128}/${LARGEST_SMOKE_MICROBATCH_SIZE:-16}/${LARGEST_SMOKE_NUM_WORKERS:-4}"
+echo "Using smoke minibatch/microbatch/workers: ${LARGEST_SMOKE_MINIBATCH_SIZE:-128}/${LARGEST_SMOKE_MICROBATCH_SIZE:-128}/${LARGEST_SMOKE_NUM_WORKERS:-4}"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi -L || true
   nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
@@ -47,6 +47,6 @@ fi
 cd "${ROOT_DIR}"
 RUN_LARGEST_SMOKE=1 \
 LARGEST_SMOKE_MINIBATCH_SIZE="${LARGEST_SMOKE_MINIBATCH_SIZE:-128}" \
-LARGEST_SMOKE_MICROBATCH_SIZE="${LARGEST_SMOKE_MICROBATCH_SIZE:-16}" \
+LARGEST_SMOKE_MICROBATCH_SIZE="${LARGEST_SMOKE_MICROBATCH_SIZE:-128}" \
 LARGEST_SMOKE_NUM_WORKERS="${LARGEST_SMOKE_NUM_WORKERS:-4}" \
 "${PY_BIN}" -m pytest -q test/test_largest_smoke_harness.py
