@@ -51,6 +51,10 @@ def num_groups_for_width(width: int) -> int:
 
 
 def minibatch_size_for_width(width: int) -> int:
+    if width == 256:
+        return 256
+    if width == 128:
+        return 512
     if width >= 512:
         return 128
     return 1024
