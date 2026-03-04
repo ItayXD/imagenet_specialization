@@ -18,7 +18,6 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--target-images-seen', type=int, default=10_000_000, help='Target images seen override')
     parser.add_argument('--safety-factor', type=float, default=1.35, help='Multiplier for suggested SLURM time')
     parser.add_argument('--base-dir', default='', help='Optional explicit base_dir override for this smoke run')
-    parser.add_argument('--ensemble-subsets', type=int, default=0, help='Override ensemble_subsets for smoke run (0 = auto)')
     parser.add_argument('--minibatch-size', type=int, default=0, help='Optional minibatch_size override for smoke run')
     parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch_size override for smoke run')
     parser.add_argument('--num-workers', type=int, default=0, help='Optional DataLoader num_workers override for smoke run')
@@ -42,33 +41,16 @@ def main() -> None:
     cfg_microbatch_size = int(training_cfg.microbatch_size)
     cfg_num_workers = int(training_cfg.num_workers)
 
-    if args.minibatch_size > 0:
-        minibatch_size = args.minibatch_size
-    elif width >= 512 and cfg_minibatch_size > 128:
-        minibatch_size = 128
-    else:
-        minibatch_size = cfg_minibatch_size
-
-    if args.microbatch_size > 0:
-        microbatch_size = args.microbatch_size
-    elif width >= 512 and cfg_microbatch_size > 128:
-        microbatch_size = 128
-    else:
-        microbatch_size = cfg_microbatch_size
-
-    if args.num_workers > 0:
-        num_workers = args.num_workers
-    elif cfg_num_workers > 4:
-        num_workers = 4
-    else:
-        num_workers = cfg_num_workers
+    minibatch_size = args.minibatch_size if args.minibatch_size > 0 else cfg_minibatch_size
+    microbatch_size = args.microbatch_size if args.microbatch_size > 0 else cfg_microbatch_size
+    num_workers = args.num_workers if args.num_workers > 0 else cfg_num_workers
 
     smoke_images_seen = args.max_tranches * minibatch_size
     stamp = time.strftime('%Y%m%d-%H%M%S')
     default_base = str(cfg.base_dir)
     smoke_base_dir = args.base_dir.strip() or os.path.join(default_base, 'smoke_runs', f'{stamp}-pid{os.getpid()}')
     ensemble_size = int(model_cfg.ensemble_size)
-    ensemble_subsets = args.ensemble_subsets if args.ensemble_subsets > 0 else ensemble_size
+    ensemble_subsets = int(training_cfg.ensemble_subsets)
 
     cmd = [
         sys.executable,
@@ -76,7 +58,6 @@ def main() -> None:
         f'experiment={args.experiment}',
         f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
         f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
-        f'hyperparams.task_list.0.training_params.ensemble_subsets={ensemble_subsets}',
         f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
         f'hyperparams.task_list.0.training_params.microbatch_size={microbatch_size}',
         f'hyperparams.task_list.0.training_params.num_workers={num_workers}',

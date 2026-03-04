@@ -29,9 +29,9 @@ EXPERIMENT="${1:-exchangeability_w512_g0}"
 MAX_TRANCHES="${2:-50}"
 TARGET_IMAGES_SEEN="${3:-10000000}"
 SAFETY_FACTOR="${4:-1.35}"
-MINIBATCH_SIZE="${5:-128}"
-MICROBATCH_SIZE="${6:-128}"
-NUM_WORKERS="${7:-4}"
+MINIBATCH_SIZE="${5:-}"
+MICROBATCH_SIZE="${6:-}"
+NUM_WORKERS="${7:-}"
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
@@ -47,17 +47,26 @@ fi
 
 echo "Running largest smoke timing job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
-echo "Using smoke minibatch/microbatch/workers: ${MINIBATCH_SIZE}/${MICROBATCH_SIZE}/${NUM_WORKERS}"
+echo "Using smoke minibatch/microbatch/workers overrides: ${MINIBATCH_SIZE:-<config>}/${MICROBATCH_SIZE:-<config>}/${NUM_WORKERS:-<config>}"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi -L || true
   nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
 fi
 cd "${ROOT_DIR}"
-"${PY_BIN}" scripts/run_largest_smoke.py \
-  --experiment "${EXPERIMENT}" \
-  --max-tranches "${MAX_TRANCHES}" \
-  --target-images-seen "${TARGET_IMAGES_SEEN}" \
-  --safety-factor "${SAFETY_FACTOR}" \
-  --minibatch-size "${MINIBATCH_SIZE}" \
-  --microbatch-size "${MICROBATCH_SIZE}" \
-  --num-workers "${NUM_WORKERS}"
+CMD=(
+  "${PY_BIN}" scripts/run_largest_smoke.py
+  --experiment "${EXPERIMENT}"
+  --max-tranches "${MAX_TRANCHES}"
+  --target-images-seen "${TARGET_IMAGES_SEEN}"
+  --safety-factor "${SAFETY_FACTOR}"
+)
+if [[ -n "${MINIBATCH_SIZE}" ]]; then
+  CMD+=(--minibatch-size "${MINIBATCH_SIZE}")
+fi
+if [[ -n "${MICROBATCH_SIZE}" ]]; then
+  CMD+=(--microbatch-size "${MICROBATCH_SIZE}")
+fi
+if [[ -n "${NUM_WORKERS}" ]]; then
+  CMD+=(--num-workers "${NUM_WORKERS}")
+fi
+"${CMD[@]}"

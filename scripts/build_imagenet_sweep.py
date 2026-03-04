@@ -37,12 +37,6 @@ WANDB_PROJECT = os.environ.get('WANDB_PROJECT', 'imagenet_specialization')
 WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 
 
-def ensemble_subsets_for_width(width: int) -> int:
-    # Subsets partition compute for already-resident ensemble states.
-    # Keep this at 1; width-512 memory safety is handled by setting ensemble_size=1.
-    return 1
-
-
 def members_per_group_for_width(width: int) -> int:
     if width >= 512:
         return 1
@@ -55,11 +49,13 @@ def num_groups_for_width(width: int) -> int:
 
 
 def minibatch_size_for_width(width: int) -> int:
-    return 128 if width >= 512 else 1024
+    del width
+    return 1024
 
 
 def microbatch_size_for_width(width: int) -> int:
-    return 128 if width >= 512 else 128
+    del width
+    return 128
 
 
 
@@ -110,7 +106,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 microbatch_size=microbatch_size_for_width(width),
                 num_workers=24,
                 epochs=50,
-                ensemble_subsets=ensemble_subsets_for_width(width),
+                ensemble_subsets=1,
                 use_warmup_cosine_decay=True,
                 target_images_seen=10_000_000,
                 p_targets_images_seen=p_targets,

@@ -145,7 +145,7 @@ This writes:
 
 - `conf/experiment/exchangeability_w{width}_g{group_id}.yaml`
 - width-512 configs default to `ensemble_size=1`, `ensemble_subsets=1`.
-- width-512 configs default to `minibatch_size=128`, `microbatch_size=128`.
+- all widths default to `minibatch_size=1024`, `microbatch_size=128`.
 - other widths keep grouped `ensemble_size=4`.
 
 ## Build Manifest
@@ -193,9 +193,8 @@ This runs 50 tranches at the largest setting and prints:
 2. `estimated_full_hours`
 3. `suggested_sbatch_time`
 
-Smoke runs default to width-512-safe overrides:
-`ensemble_subsets=1`, `minibatch_size=128`, `microbatch_size=128`.
-You can still override with `--ensemble-subsets`, `--minibatch-size`, and `--microbatch-size`.
+Smoke runs now use experiment config values by default.
+You can still override with `--minibatch-size`, `--microbatch-size`, and `--num-workers`.
 
 Apply that suggestion before full array submission.
 
@@ -205,7 +204,7 @@ Run a short pilot for each manifest row to estimate per-job runtime:
 
 ```bash
 source scripts/cluster_env.sh
-sbatch scripts/submit_timing_sweep_slurm.sh conf/exchangeability_manifest.csv 20 10000000 1.35 4
+sbatch scripts/submit_timing_sweep_slurm.sh conf/exchangeability_manifest.csv 20 10000000 1.35
 ```
 
 After the sweep completes, summarize recommendations:
