@@ -306,11 +306,17 @@ def train(
     tranches_seen = 0
     max_tranches = int(training_params.get('max_tranches', 0))
     log_every_tranches = max(1, int(training_params.get('log_every_tranches', 10)))
+    throughput_ema_alpha = float(training_params.get('throughput_ema_alpha', 0.2))
+    if throughput_ema_alpha <= 0.0 or throughput_ema_alpha > 1.0:
+        throughput_ema_alpha = 0.2
 
     wandb_run = _init_wandb(training_params, model_params, n_ensemble)
 
     info('Entering training loop...')
     start = time.time()
+    throughput_ema = None
+    throughput_last_t = start
+    throughput_last_images_seen = 0
 
     while images_seen < target_images_seen:
         for tranche in train_loader:
@@ -322,15 +328,31 @@ def train(
             step_value = int(np.asarray(state.step)[0, 0])
             lr_value = float(learning_rate_fn(step_value))
 
-            if tranches_seen % log_every_tranches == 0 and wandb_run is not None:
-                wandb_run.log(
-                    {
-                        'images_seen': images_seen,
-                        'step': step_value,
-                        'lr': lr_value,
-                    },
-                    step=images_seen,
-                )
+            if tranches_seen % log_every_tranches == 0:
+                now = time.time()
+                delta_t = now - throughput_last_t
+                delta_images = images_seen - throughput_last_images_seen
+                if delta_t > 0 and delta_images > 0:
+                    ips_inst = float(delta_images / delta_t)
+                    throughput_ema = ips_inst if throughput_ema is None else (
+                        throughput_ema_alpha * ips_inst + (1.0 - throughput_ema_alpha) * throughput_ema
+                    )
+                    info(
+                        f'throughput tranches={tranches_seen} images_seen={images_seen} '
+                        f'ips_inst={ips_inst:.2f} ips_ema={throughput_ema:.2f}'
+                    )
+                throughput_last_t = now
+                throughput_last_images_seen = images_seen
+
+                if wandb_run is not None:
+                    wandb_run.log(
+                        {
+                            'images_seen': images_seen,
+                            'step': step_value,
+                            'lr': lr_value,
+                        },
+                        step=images_seen,
+                    )
 
             while target_index < len(target_points) and images_seen >= target_points[target_index]:
                 target_p = target_points[target_index]
@@ -406,6 +428,8 @@ def train(
     if wandb_run is not None:
         wandb_run.finish()
 
+    if throughput_ema is not None:
+        info(f'throughput final_ips_ema={throughput_ema:.2f}')
     info(f'...exiting loop: elapsed time {time.time() - start:.1f}s')
     return None, None
 

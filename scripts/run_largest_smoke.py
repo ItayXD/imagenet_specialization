@@ -7,8 +7,17 @@ import os
 import subprocess
 import time
 import sys
+import re
 
 from omegaconf import OmegaConf
+
+
+TRAIN_LOOP_RE = re.compile(r'\.\.\.exiting loop: elapsed time ([0-9]+(?:\.[0-9]+)?)s')
+TASK_RE = re.compile(r'Task [0-9]+ completed\. Elapsed time \(s\): ([0-9]+(?:\.[0-9]+)?)')
+THROUGHPUT_RE = re.compile(
+    r'throughput tranches=(?P<tranches>[0-9]+) images_seen=(?P<images>[0-9]+) '
+    r'ips_inst=(?P<ips_inst>[0-9]+(?:\.[0-9]+)?) ips_ema=(?P<ips_ema>[0-9]+(?:\.[0-9]+)?)'
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -22,12 +31,50 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch_size override for smoke run')
     parser.add_argument('--num-workers', type=int, default=0, help='Optional DataLoader num_workers override for smoke run')
     parser.add_argument('--summary-json', default='', help='Optional JSON path for writing timing summary')
+    parser.add_argument(
+        '--timing-source',
+        choices=('auto', 'ema', 'train_loop', 'task', 'wall'),
+        default='auto',
+        help='Which timing source to use for extrapolation.',
+    )
     return parser.parse_args()
 
 
 def _load_experiment_cfg(experiment_name: str):
     cfg_path = f'conf/experiment/{experiment_name}.yaml'
     return OmegaConf.load(cfg_path)
+
+
+def _choose_timing_source(
+    requested: str,
+    wall_seconds: float,
+    task_seconds: float | None,
+    train_loop_seconds: float | None,
+    ema_ips: float | None,
+) -> tuple[str, float]:
+    if requested == 'ema':
+        if ema_ips is None:
+            raise RuntimeError('Requested timing_source=ema but no throughput EMA was logged.')
+        return 'ema', ema_ips
+    if requested == 'train_loop':
+        if train_loop_seconds is None:
+            raise RuntimeError('Requested timing_source=train_loop but train-loop timing was not found in logs.')
+        return 'train_loop', train_loop_seconds
+    if requested == 'task':
+        if task_seconds is None:
+            raise RuntimeError('Requested timing_source=task but task timing was not found in logs.')
+        return 'task', task_seconds
+    if requested == 'wall':
+        return 'wall', wall_seconds
+
+    # auto mode: prefer the least startup-biased source available
+    if ema_ips is not None:
+        return 'ema', ema_ips
+    if train_loop_seconds is not None:
+        return 'train_loop', train_loop_seconds
+    if task_seconds is not None:
+        return 'task', task_seconds
+    return 'wall', wall_seconds
 
 
 def main() -> None:
@@ -72,15 +119,65 @@ def main() -> None:
     print(f'Using smoke microbatch_size: {microbatch_size}')
     print(f'Using smoke num_workers: {num_workers}')
 
+    task_elapsed_s: float | None = None
+    train_loop_elapsed_s: float | None = None
+    last_ema_ips: float | None = None
+    last_inst_ips: float | None = None
+    last_throughput_images_seen: int | None = None
+    last_throughput_tranches: int | None = None
+
     start = time.time()
-    subprocess.run(cmd, check=True)
+    with subprocess.Popen(
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+    ) as proc:
+        assert proc.stdout is not None
+        for line in proc.stdout:
+            print(line, end='')
+
+            m = TRAIN_LOOP_RE.search(line)
+            if m:
+                train_loop_elapsed_s = float(m.group(1))
+
+            m = TASK_RE.search(line)
+            if m:
+                task_elapsed_s = float(m.group(1))
+
+            m = THROUGHPUT_RE.search(line)
+            if m:
+                last_throughput_tranches = int(m.group('tranches'))
+                last_throughput_images_seen = int(m.group('images'))
+                last_inst_ips = float(m.group('ips_inst'))
+                last_ema_ips = float(m.group('ips_ema'))
+
+        ret = proc.wait()
+        if ret != 0:
+            raise subprocess.CalledProcessError(ret, cmd)
+
     elapsed_s = time.time() - start
 
     if smoke_images_seen <= 0:
         print('Could not compute extrapolated time; smoke_images_seen <= 0.')
         return
 
-    images_per_s = smoke_images_seen / elapsed_s
+    timing_source, timing_value = _choose_timing_source(
+        requested=args.timing_source,
+        wall_seconds=elapsed_s,
+        task_seconds=task_elapsed_s,
+        train_loop_seconds=train_loop_elapsed_s,
+        ema_ips=last_ema_ips,
+    )
+
+    if timing_source == 'ema':
+        images_per_s = timing_value
+        basis_seconds = smoke_images_seen / max(images_per_s, 1e-12)
+    else:
+        basis_seconds = timing_value
+        images_per_s = smoke_images_seen / basis_seconds
+
     est_full_s = args.target_images_seen / images_per_s
     est_full_h = est_full_s / 3600.0
     est_with_safety_h = est_full_h * args.safety_factor
@@ -93,6 +190,22 @@ def main() -> None:
     print(f'smoke_tranches={args.max_tranches}')
     print(f'smoke_images_seen={smoke_images_seen}')
     print(f'elapsed_seconds={elapsed_s:.2f}')
+    if task_elapsed_s is not None:
+        print(f'task_elapsed_seconds={task_elapsed_s:.2f}')
+    if train_loop_elapsed_s is not None:
+        print(f'train_loop_elapsed_seconds={train_loop_elapsed_s:.2f}')
+    if last_ema_ips is not None:
+        print(f'last_throughput_ips_inst={last_inst_ips:.2f}')
+        print(f'last_throughput_ips_ema={last_ema_ips:.2f}')
+        print(
+            f'last_throughput_point=tranches:{last_throughput_tranches},'
+            f'images_seen:{last_throughput_images_seen}'
+        )
+    print(f'estimate_timing_source={timing_source}')
+    if timing_source == 'ema':
+        print(f'estimate_basis_images_per_second={images_per_s:.2f}')
+    else:
+        print(f'estimate_basis_elapsed_seconds={basis_seconds:.2f}')
     print(f'images_per_second={images_per_s:.2f}')
     print(f'estimated_full_hours={est_full_h:.2f}')
     print(f'estimated_full_hours_with_safety={est_with_safety_h:.2f} (safety_factor={args.safety_factor})')
@@ -114,6 +227,14 @@ def main() -> None:
             'microbatch_size': microbatch_size,
             'num_workers': num_workers,
             'elapsed_seconds': elapsed_s,
+            'task_elapsed_seconds': task_elapsed_s,
+            'train_loop_elapsed_seconds': train_loop_elapsed_s,
+            'last_throughput_ips_inst': last_inst_ips,
+            'last_throughput_ips_ema': last_ema_ips,
+            'last_throughput_images_seen': last_throughput_images_seen,
+            'last_throughput_tranches': last_throughput_tranches,
+            'estimate_timing_source': timing_source,
+            'estimate_basis_elapsed_seconds': basis_seconds if timing_source != 'ema' else None,
             'smoke_images_seen': smoke_images_seen,
             'images_per_second': images_per_s,
             'estimated_full_hours': est_full_h,
