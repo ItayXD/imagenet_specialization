@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--run-id', default='exchangeability', help='Run id folder name under base-save-dir')
     parser.add_argument('--output-csv', default='outputs/exchangeability_metrics.csv', help='Output CSV path')
     parser.add_argument('--shuffle-repeats', type=int, default=2000, help='Number of shuffle repeats')
+    parser.add_argument(
+        '--log-every-shuffles',
+        type=int,
+        default=100,
+        help='Print shuffle progress every N iterations (<=0 disables periodic shuffle logs)',
+    )
     parser.add_argument('--probe-batch-size', type=int, default=1024, help='Total probe images for activation vectors')
     parser.add_argument('--probe-loader-batch-size', type=int, default=1, help='Probe dataloader batch size used for streaming accumulation')
     parser.add_argument('--probe-seed', type=int, default=1234, help='Seed for probe subset selection')
@@ -248,7 +254,7 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
     rng = np.random.default_rng(probe_seed)
     indices = rng.choice(len(dataset), size=probe_batch_size, replace=False)
     subset = Subset(dataset, indices.tolist())
-    return DataLoader(subset, batch_size=probe_loader_batch_size, shuffle=False, num_workers=1, drop_last=False)
+    return DataLoader(subset, batch_size=probe_loader_batch_size, shuffle=False, num_workers=0, drop_last=False)
 
 
 
@@ -360,6 +366,7 @@ def _analysis_rows_for_similarity(
     rng: np.random.Generator,
     metric_payload: dict,
     representation: str,
+    log_every_shuffles: int,
 ):
     rows = []
     member_ids = build_member_ids(num_members, width)
@@ -412,6 +419,15 @@ def _analysis_rows_for_similarity(
             }
         )
 
+        if (
+            log_every_shuffles > 0
+            and ((shuffle_id + 1) % log_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
+        ):
+            print(
+                f"  width={metric_payload['width']} step={metric_payload['images_seen']} "
+                f"rep={representation}: shuffles {shuffle_id + 1}/{shuffle_repeats}"
+            )
+
     return rows
 
 
@@ -436,7 +452,9 @@ def _aggregate_metrics(group_dirs: list[str]) -> dict[int, dict]:
 
 
 def write_rows(rows: list[dict], output_csv: str) -> None:
-    os.makedirs(os.path.dirname(output_csv), exist_ok=True)
+    out_dir = os.path.dirname(output_csv)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
     fieldnames = [
         'width',
         'images_seen',
@@ -477,62 +495,96 @@ def main() -> None:
     probe_loader = _build_probe_loader(args.probe_batch_size, args.probe_seed, args.probe_loader_batch_size)
     rng = np.random.default_rng(args.probe_seed)
 
-    output_rows = []
+    out_dir = os.path.dirname(args.output_csv)
+    if out_dir:
+        os.makedirs(out_dir, exist_ok=True)
 
-    for width, width_dir in sorted(width_dirs.items()):
-        group_dirs = _list_group_dirs(width_dir)
-        if not group_dirs:
-            continue
+    fieldnames = [
+        'width',
+        'images_seen',
+        'representation',
+        'analysis_type',
+        'shuffle_id',
+        'ks_distance',
+        'ks_p_raw',
+        'ks_sigma_two_sided',
+        'w1_distance',
+        'train_loss',
+        'val_loss',
+        'train_error',
+        'val_error',
+    ]
 
-        common_steps = _collect_target_steps(group_dirs)
-        metrics_by_step = _aggregate_metrics(group_dirs)
+    rows_written = 0
+    with open(args.output_csv, 'w', newline='', encoding='utf-8') as f_out:
+        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
+        writer.writeheader()
+        f_out.flush()
 
-        for step in common_steps:
-            metric_payload = {
-                'width': width,
-                'images_seen': step,
-                'train_loss': metrics_by_step.get(step, {}).get('train_loss', np.nan),
-                'train_error': metrics_by_step.get(step, {}).get('train_error', np.nan),
-                'val_loss': metrics_by_step.get(step, {}).get('val_loss', np.nan),
-                'val_error': metrics_by_step.get(step, {}).get('val_error', np.nan),
-            }
+        for width, width_dir in sorted(width_dirs.items()):
+            group_dirs = _list_group_dirs(width_dir)
+            if not group_dirs:
+                continue
 
-            # weights
-            weight_chunks = [_extract_weights_from_artifacts(g, step) for g in group_dirs]
-            weights = np.concatenate(weight_chunks, axis=0)
-            num_members = weights.shape[0]
-            weight_sim = _weight_similarity_matrix(weights)
-            output_rows.extend(
-                _analysis_rows_for_similarity(
-                    similarity_matrix=weight_sim,
-                    num_members=num_members,
-                    width=width,
-                    shuffle_repeats=args.shuffle_repeats,
-                    rng=rng,
-                    metric_payload=metric_payload,
-                    representation='weights',
+            common_steps = _collect_target_steps(group_dirs)
+            metrics_by_step = _aggregate_metrics(group_dirs)
+
+            for step in common_steps:
+                metric_payload = {
+                    'width': width,
+                    'images_seen': step,
+                    'train_loss': metrics_by_step.get(step, {}).get('train_loss', np.nan),
+                    'train_error': metrics_by_step.get(step, {}).get('train_error', np.nan),
+                    'val_loss': metrics_by_step.get(step, {}).get('val_loss', np.nan),
+                    'val_error': metrics_by_step.get(step, {}).get('val_error', np.nan),
+                }
+
+                step_rows: list[dict] = []
+
+                # weights
+                weight_chunks = [_extract_weights_from_artifacts(g, step) for g in group_dirs]
+                weights = np.concatenate(weight_chunks, axis=0)
+                num_members = weights.shape[0]
+                weight_sim = _weight_similarity_matrix(weights)
+                step_rows.extend(
+                    _analysis_rows_for_similarity(
+                        similarity_matrix=weight_sim,
+                        num_members=num_members,
+                        width=width,
+                        shuffle_repeats=args.shuffle_repeats,
+                        rng=rng,
+                        metric_payload=metric_payload,
+                        representation='weights',
+                        log_every_shuffles=args.log_every_shuffles,
+                    )
                 )
-            )
 
-            # activations
-            member_states = _collect_member_states(group_dirs, step)
-            act_sim = _activation_similarity_matrix(member_states, width, probe_loader)
-            output_rows.extend(
-                _analysis_rows_for_similarity(
-                    similarity_matrix=act_sim,
-                    num_members=len(member_states),
-                    width=width,
-                    shuffle_repeats=args.shuffle_repeats,
-                    rng=rng,
-                    metric_payload=metric_payload,
-                    representation='activations',
+                # activations
+                member_states = _collect_member_states(group_dirs, step)
+                act_sim = _activation_similarity_matrix(member_states, width, probe_loader)
+                step_rows.extend(
+                    _analysis_rows_for_similarity(
+                        similarity_matrix=act_sim,
+                        num_members=len(member_states),
+                        width=width,
+                        shuffle_repeats=args.shuffle_repeats,
+                        rng=rng,
+                        metric_payload=metric_payload,
+                        representation='activations',
+                        log_every_shuffles=args.log_every_shuffles,
+                    )
                 )
-            )
 
-            print(f'Analyzed width={width} step={step}')
+                writer.writerows(step_rows)
+                rows_written += len(step_rows)
+                f_out.flush()
 
-    write_rows(output_rows, args.output_csv)
-    print(f'Wrote {len(output_rows)} rows to {args.output_csv}')
+                print(
+                    f'Analyzed width={width} step={step} '
+                    f'rows_step={len(step_rows)} rows_written={rows_written}'
+                )
+
+    print(f'Wrote {rows_written} rows to {args.output_csv}')
 
 
 if __name__ == '__main__':
