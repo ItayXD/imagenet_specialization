@@ -69,8 +69,8 @@ def test_builds_width_specific_manifests_and_submit_scripts(tmp_path, monkeypatc
     assert len(rows_32) == 2
     assert len(rows_64) == 1
 
-    submit_32 = slurm_out / 'submit_exchangeability_w32.slurm'
-    submit_64 = slurm_out / 'submit_exchangeability_w64.slurm'
+    submit_32 = slurm_out / 'submit_exchangeability_w32.sbatch'
+    submit_64 = slurm_out / 'submit_exchangeability_w64.sbatch'
     submit_all = slurm_out / 'submit_exchangeability_all_widths.sh'
 
     assert submit_32.exists()
@@ -86,5 +86,5 @@ def test_builds_width_specific_manifests_and_submit_scripts(tmp_path, monkeypatc
     assert '#SBATCH --array=0-0' in text_64
 
     submit_all_text = submit_all.read_text(encoding='utf-8')
-    assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w32.slurm"' in submit_all_text
-    assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w64.slurm"' in submit_all_text
+    assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w32.sbatch"' in submit_all_text
+    assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w64.sbatch"' in submit_all_text

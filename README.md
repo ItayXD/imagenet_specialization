@@ -235,7 +235,7 @@ uv run python scripts/build_width_slurm_jobs.py \
 This writes:
 
 1. `conf/manifests_by_width/exchangeability_manifest_w{width}.csv`
-2. `conf/slurm_jobs/submit_exchangeability_w{width}.slurm` (each with fixed `#SBATCH --time` and width-specific array size)
+2. `conf/slurm_jobs/submit_exchangeability_w{width}.sbatch` (each with fixed `#SBATCH --time` and width-specific array size)
 3. `conf/slurm_jobs/submit_exchangeability_all_widths.sh` (helper that submits all width jobs)
 
 Submit all widths:
@@ -247,8 +247,53 @@ bash conf/slurm_jobs/submit_exchangeability_all_widths.sh
 Or submit one width:
 
 ```bash
-sbatch conf/slurm_jobs/submit_exchangeability_w512.slurm
+sbatch conf/slurm_jobs/submit_exchangeability_w512.sbatch
 ```
+
+### Pinned Per-Width Times (2026-03-04 timing sweep)
+
+These files are checked in and already pinned to the measured `selected` times:
+
+1. `conf/slurm_jobs/submit_exchangeability_w32.sbatch` -> `04:17:58`
+2. `conf/slurm_jobs/submit_exchangeability_w64.sbatch` -> `05:57:25`
+3. `conf/slurm_jobs/submit_exchangeability_w128.sbatch` -> `09:26:25`
+4. `conf/slurm_jobs/submit_exchangeability_w256.sbatch` -> `11:56:37`
+5. `conf/slurm_jobs/submit_exchangeability_w512.sbatch` -> `13:17:00`
+
+Associated manifests are also checked in:
+
+1. `conf/manifests_by_width/exchangeability_manifest_w32.csv` (4 jobs)
+2. `conf/manifests_by_width/exchangeability_manifest_w64.csv` (4 jobs)
+3. `conf/manifests_by_width/exchangeability_manifest_w128.csv` (4 jobs)
+4. `conf/manifests_by_width/exchangeability_manifest_w256.csv` (8 jobs)
+5. `conf/manifests_by_width/exchangeability_manifest_w512.csv` (16 jobs)
+
+Run one width at a time:
+
+```bash
+source scripts/cluster_env.sh
+sbatch conf/slurm_jobs/submit_exchangeability_w32.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_w64.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_w128.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_w256.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_w512.sbatch
+```
+
+Expected terminal output per submit:
+
+`Submitted batch job <JOBID>`
+
+Run all widths with one command:
+
+```bash
+source scripts/cluster_env.sh
+bash conf/slurm_jobs/submit_exchangeability_all_widths.sh
+```
+
+Expected terminal output:
+
+1. five lines, each `Submitted batch job <JOBID>`
+2. one array job per width
 
 ## Analysis
 

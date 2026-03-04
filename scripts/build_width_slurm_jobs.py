@@ -121,7 +121,7 @@ set -euo pipefail
 
 if [[ -z "${{SLURM_JOB_ID:-}}" ]]; then
   echo "This script must be submitted with sbatch." >&2
-  echo "Usage: sbatch conf/slurm_jobs/submit_exchangeability_w{width}.slurm" >&2
+  echo "Usage: sbatch conf/slurm_jobs/submit_exchangeability_w{width}.sbatch" >&2
   exit 2
 fi
 
@@ -167,7 +167,7 @@ def main() -> None:
 
         # Store paths in repo-relative form so generated scripts are portable.
         manifest_relpath = os.path.relpath(manifest_abs_path, os.getcwd())
-        submit_name = f'submit_exchangeability_w{width}.slurm'
+        submit_name = f'submit_exchangeability_w{width}.sbatch'
         submit_abs_path = os.path.join(slurm_abs_dir, submit_name)
         text = _script_text(
             width=width,
