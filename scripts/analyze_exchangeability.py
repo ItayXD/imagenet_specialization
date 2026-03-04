@@ -170,7 +170,23 @@ def _find_conv_init_kernel(params):
 def _extract_weights_from_artifacts(group_dir: str, step: int) -> np.ndarray:
     path = join(group_dir, 'artifacts', f'first_layer_{step}.npz')
     data = np.load(path)
-    return np.asarray(data['first_layer_weights'])
+    raw = np.asarray(data['first_layer_weights'])
+    if np.issubdtype(raw.dtype, np.floating):
+        return raw.astype(np.float32, copy=False)
+
+    # JAX bfloat16 can be materialized in NumPy archives as raw 2-byte records ("|V2").
+    # Reconstruct float32 values from the bfloat16 bit pattern.
+    if raw.dtype.kind == 'V' and raw.dtype.itemsize == 2:
+        bits_u16 = np.frombuffer(raw.tobytes(), dtype=np.uint16).reshape(raw.shape)
+        bits_u32 = bits_u16.astype(np.uint32) << 16
+        return bits_u32.view(np.float32)
+
+    try:
+        return raw.astype(np.float32)
+    except Exception as exc:
+        raise ValueError(
+            f'Unsupported first-layer weight dtype in artifact {path}: {raw.dtype}'
+        ) from exc
 
 
 

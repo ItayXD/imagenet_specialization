@@ -73,7 +73,7 @@ def _extract_first_layer_weights(params_tree) -> np.ndarray:
     out_ch = kernel.shape[-1]
     flattened = kernel.reshape(subset * member, -1, out_ch)
     flattened = np.transpose(flattened, (0, 2, 1))
-    return flattened
+    return flattened.astype(np.float32)
 
 
 def _ensure_dir(path: str) -> None:
