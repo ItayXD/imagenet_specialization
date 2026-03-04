@@ -49,7 +49,7 @@ def _write_csv(path: str, rows: list[dict], fieldnames: list[str]) -> None:
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
     with open(path, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=fieldnames, extrasaction='ignore')
         writer.writeheader()
         for row in rows:
             writer.writerow(row)

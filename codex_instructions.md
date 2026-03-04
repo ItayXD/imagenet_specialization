@@ -84,3 +84,50 @@ Monitor jobs:
 ```bash
 squeue -u "$USER"
 ```
+
+________
+
+Perfect. This is exactly where we wanted to land.
+
+I’ve now locked defaults to what passed:
+- width-512 runs as true single-member jobs: `ensemble_size=1`, `ensemble_subsets=1`
+- width-512 batch defaults: `minibatch=128`, `microbatch=128`
+- total grid now: 32 jobs (`4+4+4+4+16`)
+
+### What to do next (back to main plan)
+
+1. Sync this latest code to cluster (pull latest commit).
+2. Run fast sanity tests:
+```bash
+source scripts/cluster_env.sh
+sbatch scripts/submit_fast_tests_slurm.sh
+```
+3. Submit full training array:
+```bash
+source scripts/cluster_env.sh
+sbatch scripts/submit_exchangeability_slurm.sh conf/exchangeability_manifest.csv
+```
+4. Monitor:
+- logs in `/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs/slurm_logs`
+- W&B project `imagenet_specialization`
+
+5. After enough checkpoints finish, run analysis:
+```bash
+source scripts/cluster_env.sh
+uv run python scripts/analyze_exchangeability.py \
+  --base-save-dir "$BASE_SAVE_DIR" \
+  --run-id exchangeability \
+  --output-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
+  --shuffle-repeats 2000 \
+  --probe-batch-size 1024 \
+  --probe-loader-batch-size 1
+```
+
+6. Generate plots:
+```bash
+uv run python scripts/plot_exchangeability.py \
+  --input-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
+  --output-dir "$BASE_SAVE_DIR/plots_exchangeability"
+```
+
+If you want, I can now prepare a single “production submit” command set with recommended `--time/--mem/--cpus` overrides per width bucket (small widths vs width-512) to reduce queue failures and wasted allocation.
