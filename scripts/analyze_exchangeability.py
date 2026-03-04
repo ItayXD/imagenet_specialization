@@ -15,7 +15,7 @@ import jax.numpy as jnp
 import numpy as np
 from flax.training import checkpoints
 from torch.utils.data import DataLoader, Subset
-from torchvision.datasets import ImageNet
+from torchvision.datasets import ImageFolder, ImageNet
 import torchvision.transforms as transforms
 
 from src.experiment.exchangeability_utils import (
@@ -224,7 +224,11 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
         ]
     )
 
-    dataset = ImageNet(IMAGENET_FOLDER, 'val', transform=val_transform)
+    val_split_dir = os.path.join(IMAGENET_FOLDER, 'val')
+    if os.path.isdir(val_split_dir):
+        dataset = ImageFolder(val_split_dir, transform=val_transform)
+    else:
+        dataset = ImageNet(IMAGENET_FOLDER, 'val', transform=val_transform)
     rng = np.random.default_rng(probe_seed)
     indices = rng.choice(len(dataset), size=probe_batch_size, replace=False)
     subset = Subset(dataset, indices.tolist())
