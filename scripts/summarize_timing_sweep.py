@@ -9,7 +9,7 @@ from glob import glob
 
 import numpy as np
 
-ESTIMATE_METHODS = ('ema', 'train_loop', 'task', 'wall')
+ESTIMATE_METHODS = ('ema_plus_overhead', 'ema', 'train_loop', 'task', 'wall')
 
 
 def parse_args() -> argparse.Namespace:
@@ -68,11 +68,64 @@ def _as_float(value) -> float | None:
         return None
 
 
+def _backfill_ema_plus_overhead(row: dict) -> None:
+    existing = _as_float(row.get('ema_plus_overhead_estimated_full_hours_with_safety'))
+    if existing is not None:
+        return
+
+    ema_ips = _as_float(row.get('ema_images_per_second'))
+    smoke_images_seen = _as_float(row.get('smoke_images_seen'))
+    target_images_seen = _as_float(row.get('target_images_seen'))
+    safety_factor = _as_float(row.get('safety_factor'))
+    if ema_ips is None or ema_ips <= 0:
+        return
+    if smoke_images_seen is None or smoke_images_seen <= 0:
+        return
+    if target_images_seen is None or target_images_seen <= 0:
+        return
+    if safety_factor is None or safety_factor <= 0:
+        return
+
+    steady_smoke_s = smoke_images_seen / ema_ips
+    overhead_candidates = []
+    for basis_key in ('train_loop_elapsed_seconds', 'task_elapsed_seconds', 'elapsed_seconds'):
+        basis_s = _as_float(row.get(basis_key))
+        if basis_s is None or basis_s <= 0:
+            continue
+        overhead_candidates.append(max(0.0, basis_s - steady_smoke_s))
+
+    overhead_s = max(overhead_candidates) if overhead_candidates else 0.0
+    est_full_h = ((target_images_seen / ema_ips) + overhead_s) / 3600.0
+    est_full_h_safe = est_full_h * safety_factor
+
+    row['ema_plus_overhead_images_per_second'] = ema_ips
+    row['ema_plus_overhead_basis_elapsed_seconds'] = None
+    row['ema_plus_overhead_basis_overhead_seconds'] = overhead_s
+    row['ema_plus_overhead_estimated_full_hours'] = est_full_h
+    row['ema_plus_overhead_estimated_full_hours_with_safety'] = est_full_h_safe
+    row['ema_plus_overhead_suggested_sbatch_time'] = _to_hms(est_full_h_safe)
+
+
+def _selected_hours_with_backfill(row: dict) -> float:
+    source = str(row.get('estimate_timing_source', '')).strip()
+    if source in ('ema', 'ema_plus_overhead'):
+        v = _as_float(row.get('ema_plus_overhead_estimated_full_hours_with_safety'))
+        if v is not None:
+            return v
+    v = _as_float(row.get('estimated_full_hours_with_safety'))
+    if v is None:
+        raise RuntimeError(f"Missing selected timing estimate for row: {row.get('summary_json', '<unknown>')}")
+    return float(v)
+
+
 def main() -> None:
     args = parse_args()
     rows = _load_rows(args.summary_dir)
     if not rows:
         raise RuntimeError(f'No timing summary JSON files found in {args.summary_dir}')
+
+    for row in rows:
+        _backfill_ema_plus_overhead(row)
 
     rows_sorted = sorted(rows, key=lambda r: (int(r['width']), int(r['group_id']), str(r['experiment'])))
 
@@ -120,7 +173,7 @@ def main() -> None:
     width_to_hours: dict[int, list[float]] = {}
     for row in rows_sorted:
         width = int(row['width'])
-        width_to_hours.setdefault(width, []).append(float(row['estimated_full_hours_with_safety']))
+        width_to_hours.setdefault(width, []).append(_selected_hours_with_backfill(row))
 
     width_rows = []
     for width in sorted(width_to_hours):
@@ -190,6 +243,7 @@ def main() -> None:
     for row in width_rows:
         summary_bits = [
             f"selected={row['recommended_sbatch_time']}",
+            f"ema_plus_overhead={row.get('recommended_sbatch_time_ema_plus_overhead')}",
             f"ema={row.get('recommended_sbatch_time_ema')}",
             f"train_loop={row.get('recommended_sbatch_time_train_loop')}",
             f"task={row.get('recommended_sbatch_time_task')}",

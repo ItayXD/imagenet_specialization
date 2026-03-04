@@ -19,7 +19,7 @@ THROUGHPUT_RE = re.compile(
     r'throughput tranches=(?P<tranches>[0-9]+) images_seen=(?P<images>[0-9]+) '
     r'ips_inst=(?P<ips_inst>[0-9]+(?:\.[0-9]+)?) ips_ema=(?P<ips_ema>[0-9]+(?:\.[0-9]+)?)'
 )
-TIMING_METHODS = ('ema', 'train_loop', 'task', 'wall')
+TIMING_METHODS = ('ema_plus_overhead', 'ema', 'train_loop', 'task', 'wall')
 
 
 def parse_args() -> argparse.Namespace:
@@ -35,7 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--summary-json', default='', help='Optional JSON path for writing timing summary')
     parser.add_argument(
         '--timing-source',
-        choices=('auto', 'ema', 'train_loop', 'task', 'wall'),
+        choices=('auto', 'ema_plus_overhead', 'ema', 'train_loop', 'task', 'wall'),
         default='auto',
         help='Which timing source to use for extrapolation.',
     )
@@ -71,6 +71,26 @@ def _estimate_from_ips(
     }
 
 
+def _estimate_from_ips_with_overhead(
+    images_per_s: float,
+    target_images_seen: int,
+    safety_factor: float,
+    startup_overhead_seconds: float,
+) -> dict[str, float | str]:
+    overhead_s = max(0.0, float(startup_overhead_seconds))
+    est_full_s = (target_images_seen / images_per_s) + overhead_s
+    est_full_h = est_full_s / 3600.0
+    est_with_safety_h = est_full_h * safety_factor
+    hh, mm, ss = _hms_from_hours(est_with_safety_h)
+    return {
+        'images_per_second': images_per_s,
+        'estimated_full_hours': est_full_h,
+        'estimated_full_hours_with_safety': est_with_safety_h,
+        'suggested_sbatch_time': f'{hh:02d}:{mm:02d}:{ss:02d}',
+        'basis_overhead_seconds': overhead_s,
+    }
+
+
 def _estimate_from_seconds(
     basis_seconds: float,
     smoke_images_seen: int,
@@ -87,6 +107,10 @@ def _choose_timing_source(
     requested: str,
     method_estimates: dict[str, dict[str, float | str]],
 ) -> tuple[str, float]:
+    if requested == 'ema_plus_overhead':
+        if 'ema_plus_overhead' not in method_estimates:
+            raise RuntimeError('Requested timing_source=ema_plus_overhead but no EMA timing was logged.')
+        return 'ema_plus_overhead', float(method_estimates['ema_plus_overhead']['images_per_second'])
     if requested == 'ema':
         if 'ema' not in method_estimates:
             raise RuntimeError('Requested timing_source=ema but no throughput EMA was logged.')
@@ -102,10 +126,10 @@ def _choose_timing_source(
     if requested == 'wall':
         return 'wall', float(method_estimates['wall']['basis_elapsed_seconds'])
 
-    # auto mode: prefer the least startup-biased source available
+    # auto mode: prefer steady-state throughput corrected with one-time startup overhead
     for source in TIMING_METHODS:
         if source in method_estimates:
-            if source == 'ema':
+            if source in ('ema', 'ema_plus_overhead'):
                 return source, float(method_estimates[source]['images_per_second'])
             return source, float(method_estimates[source]['basis_elapsed_seconds'])
     raise RuntimeError('No timing method estimates were available.')
@@ -204,6 +228,19 @@ def main() -> None:
     method_estimates: dict[str, dict[str, float | str]] = {}
     if last_ema_ips is not None and last_ema_ips > 0:
         method_estimates['ema'] = _estimate_from_ips(last_ema_ips, args.target_images_seen, args.safety_factor)
+        steady_smoke_s = smoke_images_seen / last_ema_ips
+        startup_overhead_candidates = []
+        for basis in (train_loop_elapsed_s, task_elapsed_s, elapsed_s):
+            if basis is None or basis <= 0:
+                continue
+            startup_overhead_candidates.append(max(0.0, basis - steady_smoke_s))
+        startup_overhead_s = max(startup_overhead_candidates) if startup_overhead_candidates else 0.0
+        method_estimates['ema_plus_overhead'] = _estimate_from_ips_with_overhead(
+            last_ema_ips,
+            args.target_images_seen,
+            args.safety_factor,
+            startup_overhead_s,
+        )
     if train_loop_elapsed_s is not None and train_loop_elapsed_s > 0:
         method_estimates['train_loop'] = _estimate_from_seconds(
             train_loop_elapsed_s,
@@ -234,7 +271,7 @@ def main() -> None:
     est_full_h = float(selected_estimate['estimated_full_hours'])
     est_with_safety_h = float(selected_estimate['estimated_full_hours_with_safety'])
     basis_seconds = (
-        None if timing_source == 'ema' else float(selected_estimate['basis_elapsed_seconds'])
+        None if timing_source in ('ema', 'ema_plus_overhead') else float(selected_estimate['basis_elapsed_seconds'])
     )
     hh, mm, ss = _hms_from_hours(est_with_safety_h)
 
@@ -274,8 +311,11 @@ def main() -> None:
                 f'est_hours_with_safety={method_hours:.2f} suggested={method_sbatch}'
             )
     print(f'estimate_timing_source={timing_source}')
-    if timing_source == 'ema':
+    if timing_source in ('ema', 'ema_plus_overhead'):
         print(f'estimate_basis_images_per_second={images_per_s:.2f}')
+        overhead_s = selected_estimate.get('basis_overhead_seconds')
+        if overhead_s is not None:
+            print(f'estimate_basis_overhead_seconds={float(overhead_s):.2f}')
     else:
         print(f'estimate_basis_elapsed_seconds={basis_seconds:.2f}')
     print(f'images_per_second={images_per_s:.2f}')
@@ -331,6 +371,7 @@ def main() -> None:
                 summary[f'{method_name}_estimated_full_hours_with_safety'] = est['estimated_full_hours_with_safety']
                 summary[f'{method_name}_suggested_sbatch_time'] = est['suggested_sbatch_time']
                 summary[f'{method_name}_basis_elapsed_seconds'] = est.get('basis_elapsed_seconds')
+                summary[f'{method_name}_basis_overhead_seconds'] = est.get('basis_overhead_seconds')
         with open(args.summary_json, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, sort_keys=True)
         print(f'Wrote timing summary JSON: {args.summary_json}')

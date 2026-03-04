@@ -46,6 +46,7 @@ This repository now implements:
 - `scripts/run_timing_manifest_row.py`
 - `scripts/submit_largest_smoke_slurm.sh`
 - `scripts/summarize_timing_sweep.py`
+- `scripts/build_width_slurm_jobs.py`
 - `scripts/analyze_exchangeability.py`
 - `scripts/plot_exchangeability.py`
 - `notebooks/exchangeability_analysis.ipynb`
@@ -219,6 +220,35 @@ Outputs:
 
 1. `$BASE_SAVE_DIR/timing_sweep/timing_estimates.csv` (per job)
 2. `$BASE_SAVE_DIR/timing_sweep/timing_by_width.csv` (recommended `--time` per width)
+
+## Bake Per-Width Times Into Saved Submit Jobs
+
+If each width has a different walltime, generate width-specific manifests and submit scripts with baked `#SBATCH --time`.
+
+```bash
+source scripts/cluster_env.sh
+uv run python scripts/build_width_slurm_jobs.py \
+  --manifest conf/exchangeability_manifest.csv \
+  --timing-width-csv "$BASE_SAVE_DIR/timing_sweep/timing_by_width.csv"
+```
+
+This writes:
+
+1. `conf/manifests_by_width/exchangeability_manifest_w{width}.csv`
+2. `conf/slurm_jobs/submit_exchangeability_w{width}.slurm` (each with fixed `#SBATCH --time` and width-specific array size)
+3. `conf/slurm_jobs/submit_exchangeability_all_widths.sh` (helper that submits all width jobs)
+
+Submit all widths:
+
+```bash
+bash conf/slurm_jobs/submit_exchangeability_all_widths.sh
+```
+
+Or submit one width:
+
+```bash
+sbatch conf/slurm_jobs/submit_exchangeability_w512.slurm
+```
 
 ## Analysis
 
