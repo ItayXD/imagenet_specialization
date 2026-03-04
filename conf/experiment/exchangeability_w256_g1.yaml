@@ -44,14 +44,14 @@ hyperparams:
       run_id: exchangeability
       width: 256
       group_id: 1
-      member_group_size: 4
+      member_group_size: 2
       probe_batch_size: 1024
       log_every_tranches: 10
       max_tranches: 0
     model_params:
       BASE_N: 64
       'N': 256
-      ensemble_size: 4
+      ensemble_size: 2
       dtype: bfloat16
     seed: 471749776
   data_params:

@@ -40,6 +40,8 @@ WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 def members_per_group_for_width(width: int) -> int:
     if width >= 512:
         return 1
+    if width == 256:
+        return 2
     return DEFAULT_MEMBERS_PER_GROUP
 
 
@@ -49,7 +51,8 @@ def num_groups_for_width(width: int) -> int:
 
 
 def minibatch_size_for_width(width: int) -> int:
-    del width
+    if width >= 512:
+        return 128
     return 1024
 
 

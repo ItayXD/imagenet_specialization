@@ -18,6 +18,7 @@ THROUGHPUT_RE = re.compile(
     r'throughput tranches=(?P<tranches>[0-9]+) images_seen=(?P<images>[0-9]+) '
     r'ips_inst=(?P<ips_inst>[0-9]+(?:\.[0-9]+)?) ips_ema=(?P<ips_ema>[0-9]+(?:\.[0-9]+)?)'
 )
+TIMING_METHODS = ('ema', 'train_loop', 'task', 'wall')
 
 
 def parse_args() -> argparse.Namespace:
@@ -45,36 +46,68 @@ def _load_experiment_cfg(experiment_name: str):
     return OmegaConf.load(cfg_path)
 
 
+def _hms_from_hours(hours: float) -> tuple[int, int, int]:
+    hh = int(hours)
+    mm = int((hours - hh) * 60)
+    ss = int((((hours - hh) * 60) - mm) * 60)
+    return hh, mm, ss
+
+
+def _estimate_from_ips(
+    images_per_s: float,
+    target_images_seen: int,
+    safety_factor: float,
+) -> dict[str, float | str]:
+    est_full_s = target_images_seen / images_per_s
+    est_full_h = est_full_s / 3600.0
+    est_with_safety_h = est_full_h * safety_factor
+    hh, mm, ss = _hms_from_hours(est_with_safety_h)
+    return {
+        'images_per_second': images_per_s,
+        'estimated_full_hours': est_full_h,
+        'estimated_full_hours_with_safety': est_with_safety_h,
+        'suggested_sbatch_time': f'{hh:02d}:{mm:02d}:{ss:02d}',
+    }
+
+
+def _estimate_from_seconds(
+    basis_seconds: float,
+    smoke_images_seen: int,
+    target_images_seen: int,
+    safety_factor: float,
+) -> dict[str, float | str]:
+    images_per_s = smoke_images_seen / basis_seconds
+    out = _estimate_from_ips(images_per_s, target_images_seen, safety_factor)
+    out['basis_elapsed_seconds'] = basis_seconds
+    return out
+
+
 def _choose_timing_source(
     requested: str,
-    wall_seconds: float,
-    task_seconds: float | None,
-    train_loop_seconds: float | None,
-    ema_ips: float | None,
+    method_estimates: dict[str, dict[str, float | str]],
 ) -> tuple[str, float]:
     if requested == 'ema':
-        if ema_ips is None:
+        if 'ema' not in method_estimates:
             raise RuntimeError('Requested timing_source=ema but no throughput EMA was logged.')
-        return 'ema', ema_ips
+        return 'ema', float(method_estimates['ema']['images_per_second'])
     if requested == 'train_loop':
-        if train_loop_seconds is None:
+        if 'train_loop' not in method_estimates:
             raise RuntimeError('Requested timing_source=train_loop but train-loop timing was not found in logs.')
-        return 'train_loop', train_loop_seconds
+        return 'train_loop', float(method_estimates['train_loop']['basis_elapsed_seconds'])
     if requested == 'task':
-        if task_seconds is None:
+        if 'task' not in method_estimates:
             raise RuntimeError('Requested timing_source=task but task timing was not found in logs.')
-        return 'task', task_seconds
+        return 'task', float(method_estimates['task']['basis_elapsed_seconds'])
     if requested == 'wall':
-        return 'wall', wall_seconds
+        return 'wall', float(method_estimates['wall']['basis_elapsed_seconds'])
 
     # auto mode: prefer the least startup-biased source available
-    if ema_ips is not None:
-        return 'ema', ema_ips
-    if train_loop_seconds is not None:
-        return 'train_loop', train_loop_seconds
-    if task_seconds is not None:
-        return 'task', task_seconds
-    return 'wall', wall_seconds
+    for source in TIMING_METHODS:
+        if source in method_estimates:
+            if source == 'ema':
+                return source, float(method_estimates[source]['images_per_second'])
+            return source, float(method_estimates[source]['basis_elapsed_seconds'])
+    raise RuntimeError('No timing method estimates were available.')
 
 
 def main() -> None:
@@ -163,28 +196,42 @@ def main() -> None:
         print('Could not compute extrapolated time; smoke_images_seen <= 0.')
         return
 
-    timing_source, timing_value = _choose_timing_source(
-        requested=args.timing_source,
-        wall_seconds=elapsed_s,
-        task_seconds=task_elapsed_s,
-        train_loop_seconds=train_loop_elapsed_s,
-        ema_ips=last_ema_ips,
+    method_estimates: dict[str, dict[str, float | str]] = {}
+    if last_ema_ips is not None and last_ema_ips > 0:
+        method_estimates['ema'] = _estimate_from_ips(last_ema_ips, args.target_images_seen, args.safety_factor)
+    if train_loop_elapsed_s is not None and train_loop_elapsed_s > 0:
+        method_estimates['train_loop'] = _estimate_from_seconds(
+            train_loop_elapsed_s,
+            smoke_images_seen,
+            args.target_images_seen,
+            args.safety_factor,
+        )
+    if task_elapsed_s is not None and task_elapsed_s > 0:
+        method_estimates['task'] = _estimate_from_seconds(
+            task_elapsed_s,
+            smoke_images_seen,
+            args.target_images_seen,
+            args.safety_factor,
+        )
+    method_estimates['wall'] = _estimate_from_seconds(
+        elapsed_s,
+        smoke_images_seen,
+        args.target_images_seen,
+        args.safety_factor,
     )
 
-    if timing_source == 'ema':
-        images_per_s = timing_value
-        basis_seconds = smoke_images_seen / max(images_per_s, 1e-12)
-    else:
-        basis_seconds = timing_value
-        images_per_s = smoke_images_seen / basis_seconds
-
-    est_full_s = args.target_images_seen / images_per_s
-    est_full_h = est_full_s / 3600.0
-    est_with_safety_h = est_full_h * args.safety_factor
-
-    hh = int(est_with_safety_h)
-    mm = int((est_with_safety_h - hh) * 60)
-    ss = int((((est_with_safety_h - hh) * 60) - mm) * 60)
+    timing_source, _ = _choose_timing_source(
+        requested=args.timing_source,
+        method_estimates=method_estimates,
+    )
+    selected_estimate = method_estimates[timing_source]
+    images_per_s = float(selected_estimate['images_per_second'])
+    est_full_h = float(selected_estimate['estimated_full_hours'])
+    est_with_safety_h = float(selected_estimate['estimated_full_hours_with_safety'])
+    basis_seconds = (
+        None if timing_source == 'ema' else float(selected_estimate['basis_elapsed_seconds'])
+    )
+    hh, mm, ss = _hms_from_hours(est_with_safety_h)
 
     print('\n--- Smoke Timing Summary ---')
     print(f'smoke_tranches={args.max_tranches}')
@@ -201,6 +248,26 @@ def main() -> None:
             f'last_throughput_point=tranches:{last_throughput_tranches},'
             f'images_seen:{last_throughput_images_seen}'
         )
+    print('all_timing_methods:')
+    for method_name in TIMING_METHODS:
+        est = method_estimates.get(method_name)
+        if est is None:
+            continue
+        method_ips = float(est['images_per_second'])
+        method_hours = float(est['estimated_full_hours_with_safety'])
+        method_sbatch = str(est['suggested_sbatch_time'])
+        method_basis_s = est.get('basis_elapsed_seconds')
+        if method_basis_s is None:
+            print(
+                f'  method={method_name} ips={method_ips:.2f} '
+                f'est_hours_with_safety={method_hours:.2f} suggested={method_sbatch}'
+            )
+        else:
+            print(
+                f'  method={method_name} ips={method_ips:.2f} '
+                f'basis_elapsed_seconds={float(method_basis_s):.2f} '
+                f'est_hours_with_safety={method_hours:.2f} suggested={method_sbatch}'
+            )
     print(f'estimate_timing_source={timing_source}')
     if timing_source == 'ema':
         print(f'estimate_basis_images_per_second={images_per_s:.2f}')
@@ -234,15 +301,30 @@ def main() -> None:
             'last_throughput_images_seen': last_throughput_images_seen,
             'last_throughput_tranches': last_throughput_tranches,
             'estimate_timing_source': timing_source,
-            'estimate_basis_elapsed_seconds': basis_seconds if timing_source != 'ema' else None,
+            'estimate_basis_elapsed_seconds': basis_seconds,
             'smoke_images_seen': smoke_images_seen,
             'images_per_second': images_per_s,
             'estimated_full_hours': est_full_h,
             'estimated_full_hours_with_safety': est_with_safety_h,
             'safety_factor': args.safety_factor,
             'suggested_sbatch_time': f'{hh:02d}:{mm:02d}:{ss:02d}',
+            'timing_method_estimates': method_estimates,
             'smoke_base_dir': smoke_base_dir,
         }
+        for method_name in TIMING_METHODS:
+            est = method_estimates.get(method_name)
+            if est is None:
+                summary[f'{method_name}_images_per_second'] = None
+                summary[f'{method_name}_estimated_full_hours'] = None
+                summary[f'{method_name}_estimated_full_hours_with_safety'] = None
+                summary[f'{method_name}_suggested_sbatch_time'] = None
+                summary[f'{method_name}_basis_elapsed_seconds'] = None
+            else:
+                summary[f'{method_name}_images_per_second'] = est['images_per_second']
+                summary[f'{method_name}_estimated_full_hours'] = est['estimated_full_hours']
+                summary[f'{method_name}_estimated_full_hours_with_safety'] = est['estimated_full_hours_with_safety']
+                summary[f'{method_name}_suggested_sbatch_time'] = est['suggested_sbatch_time']
+                summary[f'{method_name}_basis_elapsed_seconds'] = est.get('basis_elapsed_seconds')
         with open(args.summary_json, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, sort_keys=True)
         print(f'Wrote timing summary JSON: {args.summary_json}')

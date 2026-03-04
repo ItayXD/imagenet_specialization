@@ -6,7 +6,7 @@ hyperparams:
   task_list:
   - training_params:
       eta_0: 0.008
-      minibatch_size: 1024
+      minibatch_size: 128
       microbatch_size: 128
       num_workers: 24
       epochs: 50
@@ -53,7 +53,7 @@ hyperparams:
       'N': 512
       ensemble_size: 1
       dtype: bfloat16
-    seed: 958676193
+    seed: 188668191
   data_params:
     P: 1281167
     data_seed: 2423

@@ -6,7 +6,7 @@ hyperparams:
   task_list:
   - training_params:
       eta_0: 0.008
-      minibatch_size: 128
+      minibatch_size: 1024
       microbatch_size: 128
       num_workers: 24
       epochs: 50
@@ -42,21 +42,21 @@ hyperparams:
       wandb_entity: ''
       wandb_mode: online
       run_id: exchangeability
-      width: 512
-      group_id: 14
-      member_group_size: 1
+      width: 256
+      group_id: 6
+      member_group_size: 2
       probe_batch_size: 1024
       log_every_tranches: 10
       max_tranches: 0
     model_params:
       BASE_N: 64
-      'N': 512
-      ensemble_size: 1
+      'N': 256
+      ensemble_size: 2
       dtype: bfloat16
-    seed: 879753677
+    seed: 645813135
   data_params:
     P: 1281167
     data_seed: 2423
     root_dir: data-dir
     val_P: 1024
-base_dir: /n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_runs/w512/g14
+base_dir: /n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_runs/w256/g6

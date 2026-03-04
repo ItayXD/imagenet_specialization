@@ -9,6 +9,8 @@ from glob import glob
 
 import numpy as np
 
+ESTIMATE_METHODS = ('ema', 'train_loop', 'task', 'wall')
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Summarize timing sweep JSON files.')
@@ -55,6 +57,17 @@ def _write_csv(path: str, rows: list[dict], fieldnames: list[str]) -> None:
             writer.writerow(row)
 
 
+def _as_float(value) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and value.strip() == '':
+        return None
+    try:
+        return float(value)
+    except Exception:
+        return None
+
+
 def main() -> None:
     args = parse_args()
     rows = _load_rows(args.summary_dir)
@@ -64,6 +77,17 @@ def main() -> None:
     rows_sorted = sorted(rows, key=lambda r: (int(r['width']), int(r['group_id']), str(r['experiment'])))
 
     detail_csv = args.output_csv or os.path.join(args.summary_dir, 'timing_estimates.csv')
+    method_detail_fields = []
+    for method in ESTIMATE_METHODS:
+        method_detail_fields.extend(
+            [
+                f'{method}_images_per_second',
+                f'{method}_basis_elapsed_seconds',
+                f'{method}_estimated_full_hours',
+                f'{method}_estimated_full_hours_with_safety',
+                f'{method}_suggested_sbatch_time',
+            ]
+        )
     detail_fields = [
         'row_index',
         'experiment',
@@ -83,6 +107,7 @@ def main() -> None:
         'last_throughput_ips_ema',
         'last_throughput_images_seen',
         'last_throughput_tranches',
+        *method_detail_fields,
         'elapsed_seconds',
         'images_per_second',
         'estimated_full_hours',
@@ -99,20 +124,44 @@ def main() -> None:
 
     width_rows = []
     for width in sorted(width_to_hours):
-        vals = np.array(width_to_hours[width], dtype=np.float64)
-        max_hours = float(np.max(vals))
-        p90_hours = float(np.percentile(vals, 90))
-        median_hours = float(np.median(vals))
-        width_rows.append(
-            {
-                'width': width,
-                'num_jobs': int(vals.size),
-                'median_estimated_hours_with_safety': round(median_hours, 3),
-                'p90_estimated_hours_with_safety': round(p90_hours, 3),
-                'max_estimated_hours_with_safety': round(max_hours, 3),
-                'recommended_sbatch_time': _to_hms(max_hours),
-            }
-        )
+        out_row = {'width': width, 'num_jobs': 0}
+
+        selected_vals = np.array(width_to_hours[width], dtype=np.float64)
+        sel_max = float(np.max(selected_vals))
+        sel_p90 = float(np.percentile(selected_vals, 90))
+        sel_median = float(np.median(selected_vals))
+        out_row['num_jobs'] = int(selected_vals.size)
+        out_row['median_estimated_hours_with_safety'] = round(sel_median, 3)
+        out_row['p90_estimated_hours_with_safety'] = round(sel_p90, 3)
+        out_row['max_estimated_hours_with_safety'] = round(sel_max, 3)
+        out_row['recommended_sbatch_time'] = _to_hms(sel_max)
+
+        width_rows_only = [r for r in rows_sorted if int(r['width']) == width]
+        for method in ESTIMATE_METHODS:
+            method_key = f'{method}_estimated_full_hours_with_safety'
+            method_vals = []
+            for row in width_rows_only:
+                v = _as_float(row.get(method_key))
+                if v is not None:
+                    method_vals.append(v)
+
+            out_row[f'num_jobs_{method}'] = len(method_vals)
+            if method_vals:
+                vals = np.array(method_vals, dtype=np.float64)
+                mmax = float(np.max(vals))
+                mp90 = float(np.percentile(vals, 90))
+                mmed = float(np.median(vals))
+                out_row[f'median_estimated_hours_with_safety_{method}'] = round(mmed, 3)
+                out_row[f'p90_estimated_hours_with_safety_{method}'] = round(mp90, 3)
+                out_row[f'max_estimated_hours_with_safety_{method}'] = round(mmax, 3)
+                out_row[f'recommended_sbatch_time_{method}'] = _to_hms(mmax)
+            else:
+                out_row[f'median_estimated_hours_with_safety_{method}'] = None
+                out_row[f'p90_estimated_hours_with_safety_{method}'] = None
+                out_row[f'max_estimated_hours_with_safety_{method}'] = None
+                out_row[f'recommended_sbatch_time_{method}'] = None
+
+        width_rows.append(out_row)
 
     width_csv = args.output_width_csv or os.path.join(args.summary_dir, 'timing_by_width.csv')
     width_fields = [
@@ -123,17 +172,30 @@ def main() -> None:
         'max_estimated_hours_with_safety',
         'recommended_sbatch_time',
     ]
+    for method in ESTIMATE_METHODS:
+        width_fields.extend(
+            [
+                f'num_jobs_{method}',
+                f'median_estimated_hours_with_safety_{method}',
+                f'p90_estimated_hours_with_safety_{method}',
+                f'max_estimated_hours_with_safety_{method}',
+                f'recommended_sbatch_time_{method}',
+            ]
+        )
     _write_csv(width_csv, width_rows, width_fields)
 
     print(f'Wrote per-row timing CSV: {detail_csv}')
     print(f'Wrote per-width timing CSV: {width_csv}')
     print('Width recommendations:')
     for row in width_rows:
-        print(
-            f"  width={row['width']}: "
-            f"recommended_sbatch_time={row['recommended_sbatch_time']} "
-            f"(max_hours={row['max_estimated_hours_with_safety']})"
-        )
+        summary_bits = [
+            f"selected={row['recommended_sbatch_time']}",
+            f"ema={row.get('recommended_sbatch_time_ema')}",
+            f"train_loop={row.get('recommended_sbatch_time_train_loop')}",
+            f"task={row.get('recommended_sbatch_time_task')}",
+            f"wall={row.get('recommended_sbatch_time_wall')}",
+        ]
+        print(f"  width={row['width']}: " + ', '.join(summary_bits))
 
 
 if __name__ == '__main__':
