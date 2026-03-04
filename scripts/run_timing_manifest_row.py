@@ -19,6 +19,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--num-workers', type=int, default=0, help='Optional DataLoader workers override')
     parser.add_argument('--minibatch-size', type=int, default=0, help='Optional minibatch override')
     parser.add_argument('--microbatch-size', type=int, default=0, help='Optional microbatch override')
+    parser.add_argument(
+        '--timing-source',
+        choices=('auto', 'ema', 'train_loop', 'task', 'wall'),
+        default='auto',
+        help='Timing source passed through to run_largest_smoke.py',
+    )
     return parser.parse_args()
 
 
@@ -55,6 +61,8 @@ def main() -> None:
         str(args.safety_factor),
         '--summary-json',
         summary_json,
+        '--timing-source',
+        args.timing_source,
     ]
 
     if args.num_workers > 0:

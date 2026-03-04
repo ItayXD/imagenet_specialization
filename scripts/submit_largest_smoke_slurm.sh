@@ -11,7 +11,7 @@ set -euo pipefail
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "This script must be submitted with sbatch." >&2
-  echo "Usage: sbatch scripts/submit_largest_smoke_slurm.sh [experiment] [max_tranches] [target_images_seen] [safety_factor] [minibatch_size] [microbatch_size] [num_workers]" >&2
+  echo "Usage: sbatch scripts/submit_largest_smoke_slurm.sh [experiment] [max_tranches] [target_images_seen] [safety_factor] [minibatch_size] [microbatch_size] [num_workers] [timing_source]" >&2
   exit 2
 fi
 
@@ -32,6 +32,7 @@ SAFETY_FACTOR="${4:-1.35}"
 MINIBATCH_SIZE="${5:-}"
 MICROBATCH_SIZE="${6:-}"
 NUM_WORKERS="${7:-}"
+TIMING_SOURCE="${8:-auto}"
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
@@ -48,6 +49,7 @@ fi
 echo "Running largest smoke timing job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 echo "Using smoke minibatch/microbatch/workers overrides: ${MINIBATCH_SIZE:-<config>}/${MICROBATCH_SIZE:-<config>}/${NUM_WORKERS:-<config>}"
+echo "Using timing_source=${TIMING_SOURCE}"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi -L || true
   nvidia-smi --query-gpu=name,memory.total,memory.free --format=csv,noheader || true
@@ -59,6 +61,7 @@ CMD=(
   --max-tranches "${MAX_TRANCHES}"
   --target-images-seen "${TARGET_IMAGES_SEEN}"
   --safety-factor "${SAFETY_FACTOR}"
+  --timing-source "${TIMING_SOURCE}"
 )
 if [[ -n "${MINIBATCH_SIZE}" ]]; then
   CMD+=(--minibatch-size "${MINIBATCH_SIZE}")

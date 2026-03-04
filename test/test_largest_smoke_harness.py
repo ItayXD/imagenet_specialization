@@ -12,6 +12,7 @@ def test_largest_smoke_harness_runs():
     minibatch_size = os.environ.get('LARGEST_SMOKE_MINIBATCH_SIZE', '')
     microbatch_size = os.environ.get('LARGEST_SMOKE_MICROBATCH_SIZE', '')
     num_workers = os.environ.get('LARGEST_SMOKE_NUM_WORKERS', '')
+    timing_source = os.environ.get('LARGEST_SMOKE_TIMING_SOURCE', '')
 
     cmd = [
         sys.executable,
@@ -28,5 +29,7 @@ def test_largest_smoke_harness_runs():
         cmd.extend(['--microbatch-size', microbatch_size])
     if num_workers:
         cmd.extend(['--num-workers', num_workers])
+    if timing_source:
+        cmd.extend(['--timing-source', timing_source])
 
     subprocess.run(cmd, check=True)

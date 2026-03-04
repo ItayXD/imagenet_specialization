@@ -16,10 +16,11 @@ TARGET_IMAGES_SEEN="${3:-10000000}"
 SAFETY_FACTOR="${4:-1.35}"
 NUM_WORKERS="${5:-}"
 SUMMARY_DIR_ARG="${6:-}"
+TIMING_SOURCE="${7:-auto}"
 
 if [[ -z "${SLURM_JOB_ID:-}" ]]; then
   echo "This script must be submitted with sbatch." >&2
-  echo "Usage: sbatch scripts/submit_timing_sweep_slurm.sh [manifest_path] [max_tranches] [target_images_seen] [safety_factor] [num_workers_override] [summary_dir]" >&2
+  echo "Usage: sbatch scripts/submit_timing_sweep_slurm.sh [manifest_path] [max_tranches] [target_images_seen] [safety_factor] [num_workers_override] [summary_dir] [timing_source]" >&2
   exit 2
 fi
 
@@ -79,6 +80,7 @@ fi
 echo "Running timing sweep row ${TASK_ID}/${TOTAL_ROWS} on job ${SLURM_ARRAY_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 echo "Using max_tranches=${MAX_TRANCHES}, target_images_seen=${TARGET_IMAGES_SEEN}, safety_factor=${SAFETY_FACTOR}, num_workers_override=${NUM_WORKERS:-<config>}"
+echo "Using timing_source=${TIMING_SOURCE}"
 echo "Timing summary directory: ${SUMMARY_DIR}"
 if command -v nvidia-smi >/dev/null 2>&1; then
   nvidia-smi -L || true
@@ -94,6 +96,7 @@ CMD=(
   --target-images-seen "${TARGET_IMAGES_SEEN}"
   --safety-factor "${SAFETY_FACTOR}"
   --summary-dir "${SUMMARY_DIR}"
+  --timing-source "${TIMING_SOURCE}"
 )
 if [[ -n "${NUM_WORKERS}" ]]; then
   CMD+=(--num-workers "${NUM_WORKERS}")
