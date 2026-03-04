@@ -42,6 +42,12 @@ def main() -> None:
         cmd.append(f'hyperparams.task_list.0.training_params.run_id={run_id}')
         print(f'Using run_id override: {run_id}')
 
+        base_dir = str(row.get('base_dir', '')).strip()
+        if base_dir:
+            run_base_dir = f'{base_dir}_{run_id_suffix}'
+            cmd.append(f'base_dir={run_base_dir}')
+            print(f'Using base_dir override: {run_base_dir}')
+
     print('Running:', ' '.join(cmd))
     subprocess.run(cmd, check=True)
 
