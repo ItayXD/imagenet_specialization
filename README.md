@@ -302,6 +302,7 @@ source scripts/cluster_env.sh
 uv run python scripts/analyze_exchangeability.py \
   --base-save-dir "$BASE_SAVE_DIR" \
   --run-id exchangeability \
+  --run-id-resolution latest_prefix \
   --output-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
   --shuffle-repeats 2000 \
   --probe-batch-size 1024 \

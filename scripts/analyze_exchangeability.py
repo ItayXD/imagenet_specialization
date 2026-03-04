@@ -38,10 +38,36 @@ from src.run.constants import IMAGENET_FOLDER
 STATE_PATTERN = re.compile(r'^state_(\d+)')
 
 
+def _is_notebook_session() -> bool:
+    try:
+        from IPython import get_ipython  # type: ignore
+    except Exception:
+        return False
+    ip = get_ipython()
+    if ip is None:
+        return False
+    return ip.__class__.__name__ == 'ZMQInteractiveShell'
+
+
+def _progress(iterable, **kwargs):
+    kwargs.setdefault('dynamic_ncols', True)
+    # In non-interactive log streams, tqdm prints one line per refresh.
+    # Disable bars unless we're in a tty or notebook session.
+    if 'disable' not in kwargs:
+        kwargs['disable'] = (not sys.stdout.isatty()) and (not _is_notebook_session())
+    return tqdm(iterable, **kwargs)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Analyze exchangeability from grouped ensemble checkpoints.')
     parser.add_argument('--base-save-dir', required=True, help='Root save directory (BASE_SAVE_DIR)')
     parser.add_argument('--run-id', default='exchangeability', help='Run id folder name under base-save-dir')
+    parser.add_argument(
+        '--run-id-resolution',
+        choices=['exact', 'latest_prefix', 'auto'],
+        default='auto',
+        help='How to resolve --run-id when both exact and suffixed runs exist.',
+    )
     parser.add_argument('--output-csv', default='outputs/exchangeability_metrics.csv', help='Output CSV path')
     parser.add_argument('--shuffle-repeats', type=int, default=2000, help='Number of shuffle repeats')
     parser.add_argument(
@@ -65,6 +91,8 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument('--probe-seed', type=int, default=1234, help='Seed for probe subset selection')
     parser.add_argument('--widths', type=int, nargs='*', default=None, help='Optional list of widths to analyze')
+    parser.add_argument('--resume', dest='resume', action='store_true', default=True, help='Resume from existing output CSV when possible')
+    parser.add_argument('--no-resume', dest='resume', action='store_false', help='Ignore existing output CSV and recompute everything')
     return parser.parse_args()
 
 
@@ -90,16 +118,15 @@ def _list_width_dirs(base_save_dir: str, run_id: str) -> dict[int, str]:
 
 
 
-def _resolve_run_id(base_save_dir: str, run_id: str) -> str:
-    exact_dir = join(base_save_dir, run_id)
-    if os.path.isdir(exact_dir):
-        return run_id
-
+def _resolve_run_id(base_save_dir: str, run_id: str, resolution_mode: str) -> str:
     if not os.path.isdir(base_save_dir):
         raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
 
+    exact_dir = join(base_save_dir, run_id)
+    has_exact = os.path.isdir(exact_dir)
+
     prefix = f'{run_id}_'
-    candidates = []
+    candidates: list[tuple[float, str]] = []
     for name in os.listdir(base_save_dir):
         path = join(base_save_dir, name)
         if not os.path.isdir(path):
@@ -108,6 +135,33 @@ def _resolve_run_id(base_save_dir: str, run_id: str) -> str:
             continue
         candidates.append((os.path.getmtime(path), name))
 
+    if resolution_mode == 'exact':
+        if has_exact:
+            return run_id
+        raise FileNotFoundError(
+            f'Run id "{run_id}" not found under {base_save_dir} (exact resolution mode).'
+        )
+
+    if resolution_mode == 'latest_prefix':
+        if not candidates:
+            if has_exact:
+                print(
+                    f'Run id resolution requested latest_prefix, but no "{prefix}*" dirs found. '
+                    f'Falling back to exact run "{run_id}".'
+                )
+                return run_id
+            raise FileNotFoundError(
+                f'No "{prefix}*" runs found under {base_save_dir}, and exact run "{run_id}" is missing.'
+            )
+        candidates.sort(key=lambda x: x[0])
+        resolved = candidates[-1][1]
+        print(f'Run id "{run_id}" resolved via latest_prefix to "{resolved}".')
+        return resolved
+
+    # auto: choose newest between exact run and suffixed runs when both are present.
+    if has_exact:
+        candidates.append((os.path.getmtime(exact_dir), run_id))
+
     if not candidates:
         raise FileNotFoundError(
             f'Run id "{run_id}" not found under {base_save_dir}, and no "{prefix}*" runs were found.'
@@ -115,7 +169,14 @@ def _resolve_run_id(base_save_dir: str, run_id: str) -> str:
 
     candidates.sort(key=lambda x: x[0])
     resolved = candidates[-1][1]
-    print(f'Run id "{run_id}" not found. Using latest matching run "{resolved}".')
+    if resolved == run_id:
+        if len(candidates) > 1:
+            print(
+                f'Run id "{run_id}" resolved via auto to exact run "{resolved}" '
+                f'(newer than available "{prefix}*" runs).'
+            )
+    else:
+        print(f'Run id "{run_id}" resolved via auto to latest matching run "{resolved}".')
     return resolved
 
 
@@ -157,13 +218,11 @@ def _collect_target_steps(group_dirs: list[str]) -> list[int]:
     if not group_dirs:
         return []
     common = None
-    group_iter = tqdm(
+    group_iter = _progress(
         group_dirs,
         desc='collect-target-steps',
         total=len(group_dirs),
-        dynamic_ncols=True,
         leave=False,
-        file=sys.stdout,
     )
     for d in group_iter:
         s = _list_state_steps(d)
@@ -216,6 +275,17 @@ def _extract_weights_from_artifacts(group_dir: str, step: int) -> np.ndarray:
         raise ValueError(
             f'Unsupported first-layer weight dtype in artifact {path}: {raw.dtype}'
         ) from exc
+
+
+
+def _missing_weight_artifacts(group_dirs: list[str], step: int) -> list[str]:
+    missing = []
+    filename = f'first_layer_{step}.npz'
+    for group_dir in group_dirs:
+        path = join(group_dir, 'artifacts', filename)
+        if not os.path.exists(path):
+            missing.append(path)
+    return missing
 
 
 
@@ -330,25 +400,21 @@ def _activation_similarity_matrix(
         for f in range(e + 1, num_members):
             cross_grams[(e, f)] = jnp.zeros((width, width), dtype=jnp.float32)
 
-    batch_iter = tqdm(
+    batch_iter = _progress(
         probe_loader,
         desc=f'{progress_label} probe-batches',
-        dynamic_ncols=True,
         leave=False,
-        file=sys.stdout,
     )
     for batch in batch_iter:
         batch_x, _ = batch
         x = jnp.asarray(batch_x)
 
         member_features = []
-        member_iter = tqdm(
+        member_iter = _progress(
             member_variables,
             desc=f'{progress_label} members',
             total=num_members,
-            dynamic_ncols=True,
             leave=False,
-            file=sys.stdout,
         )
         for vars_ in member_iter:
             conv_out = _extract_conv_init_output(model, vars_, x)
@@ -397,12 +463,10 @@ def _weight_similarity_matrix(weights: np.ndarray) -> np.ndarray:
 
 def _collect_member_states(group_dirs: list[str], step: int, progress_label: str = '') -> list[dict]:
     members = []
-    group_iter = tqdm(
+    group_iter = _progress(
         group_dirs,
         desc=f'{progress_label} restore-groups',
-        dynamic_ncols=True,
         leave=False,
-        file=sys.stdout,
     )
     for group_dir in group_iter:
         state_dir = join(group_dir, 'state_ckpts')
@@ -453,13 +517,11 @@ def _analysis_rows_for_similarity(
         row_callback(pending_rows)
         pending_rows = []
 
-    shuffle_iter = tqdm(
+    shuffle_iter = _progress(
         range(shuffle_repeats),
         desc=f"w{metric_payload['width']} p{metric_payload['images_seen']} {representation} shuffles",
         total=shuffle_repeats,
-        dynamic_ncols=True,
         leave=False,
-        file=sys.stdout,
     )
     for shuffle_id in shuffle_iter:
         across_shuf, within_shuf = shuffled_similarity_values(similarity_matrix, num_members, width, rng)
@@ -518,13 +580,11 @@ def _analysis_rows_for_similarity(
 
 def _aggregate_metrics(group_dirs: list[str]) -> dict[int, dict]:
     by_step = defaultdict(list)
-    group_iter = tqdm(
+    group_iter = _progress(
         group_dirs,
         desc='aggregate-metrics',
         total=len(group_dirs),
-        dynamic_ncols=True,
         leave=False,
-        file=sys.stdout,
     )
     for group_dir in group_iter:
         gm = _load_group_metrics(group_dir)
@@ -570,10 +630,89 @@ def write_rows(rows: list[dict], output_csv: str) -> None:
 
 
 
+def _row_identity(row: dict) -> tuple[int, int, str, str, int]:
+    return (
+        int(row['width']),
+        int(row['images_seen']),
+        str(row['representation']),
+        str(row['analysis_type']),
+        int(row['shuffle_id']),
+    )
+
+
+def _rep_identity(row: dict) -> tuple[int, int, str]:
+    return (
+        int(row['width']),
+        int(row['images_seen']),
+        str(row['representation']),
+    )
+
+
+def _prepare_resume_state(
+    output_csv: str,
+    fieldnames: list[str],
+    shuffle_repeats: int,
+    resume: bool,
+) -> tuple[set[tuple[int, int, str]], int, str]:
+    if (not resume) or (not os.path.exists(output_csv)):
+        return set(), 0, 'w'
+
+    with open(output_csv, 'r', newline='', encoding='utf-8') as f:
+        rows = list(csv.DictReader(f))
+    if not rows:
+        return set(), 0, 'w'
+
+    dedup_rows = []
+    seen_keys: set[tuple[int, int, str, str, int]] = set()
+    for row in rows:
+        key = _row_identity(row)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        dedup_rows.append(row)
+
+    if len(dedup_rows) != len(rows):
+        with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(dedup_rows)
+        print(f'Resume: removed {len(rows) - len(dedup_rows)} duplicate rows from existing output.')
+        rows = dedup_rows
+
+    expected_rep_rows = 1 + 2 * shuffle_repeats
+    rep_counts: dict[tuple[int, int, str], int] = defaultdict(int)
+    for row in rows:
+        rep_counts[_rep_identity(row)] += 1
+
+    incomplete_reps = {k for k, c in rep_counts.items() if c < expected_rep_rows}
+    if incomplete_reps:
+        kept_rows = [r for r in rows if _rep_identity(r) not in incomplete_reps]
+        with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(kept_rows)
+        removed = len(rows) - len(kept_rows)
+        print(
+            f'Resume: dropped {removed} partial rows across {len(incomplete_reps)} incomplete representations.'
+        )
+        rows = kept_rows
+        rep_counts = defaultdict(int)
+        for row in rows:
+            rep_counts[_rep_identity(row)] += 1
+
+    completed_reps = {k for k, c in rep_counts.items() if c >= expected_rep_rows}
+    if rows:
+        print(
+            f'Resume: keeping {len(rows)} existing rows, '
+            f'skipping {len(completed_reps)} completed representations.'
+        )
+    return completed_reps, len(rows), ('a' if rows else 'w')
+
+
 def main() -> None:
     args = parse_args()
 
-    resolved_run_id = _resolve_run_id(args.base_save_dir, args.run_id)
+    resolved_run_id = _resolve_run_id(args.base_save_dir, args.run_id, args.run_id_resolution)
     width_dirs = _list_width_dirs(args.base_save_dir, resolved_run_id)
     if not width_dirs:
         raise RuntimeError(
@@ -607,18 +746,24 @@ def main() -> None:
         'val_error',
     ]
 
-    rows_written = 0
-    with open(args.output_csv, 'w', newline='', encoding='utf-8') as f_out:
-        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
-        writer.writeheader()
-        f_out.flush()
+    completed_reps, rows_written, file_mode = _prepare_resume_state(
+        output_csv=args.output_csv,
+        fieldnames=fieldnames,
+        shuffle_repeats=args.shuffle_repeats,
+        resume=args.resume,
+    )
 
-        width_iter = tqdm(
+    with open(args.output_csv, file_mode, newline='', encoding='utf-8') as f_out:
+        writer = csv.DictWriter(f_out, fieldnames=fieldnames)
+        if file_mode == 'w':
+            writer.writeheader()
+            f_out.flush()
+
+        width_iter = _progress(
             sorted(width_dirs.items()),
             desc='widths',
             total=len(width_dirs),
-            dynamic_ncols=True,
-            file=sys.stdout,
+            leave=True,
         )
         for width, width_dir in width_iter:
             group_dirs = _list_group_dirs(width_dir)
@@ -627,13 +772,11 @@ def main() -> None:
 
             common_steps = _collect_target_steps(group_dirs)
             metrics_by_step = _aggregate_metrics(group_dirs)
-            step_iter = tqdm(
+            step_iter = _progress(
                 common_steps,
                 desc=f'width={width} steps',
                 total=len(common_steps),
-                dynamic_ncols=True,
                 leave=False,
-                file=sys.stdout,
             )
             for step in step_iter:
                 metric_payload = {
@@ -648,62 +791,82 @@ def main() -> None:
                 rows_step = 0
 
                 # weights
-                t0 = time.time()
-                print(f'Starting width={width} step={step} rep=weights')
-                weight_chunks = [_extract_weights_from_artifacts(g, step) for g in group_dirs]
-                weights = np.concatenate(weight_chunks, axis=0)
-                num_members = weights.shape[0]
-                weight_sim = _weight_similarity_matrix(weights)
-                weight_rows = _analysis_rows_for_similarity(
-                    similarity_matrix=weight_sim,
-                    num_members=num_members,
-                    width=width,
-                    shuffle_repeats=args.shuffle_repeats,
-                    rng=rng,
-                    metric_payload=metric_payload,
-                    representation='weights',
-                    log_every_shuffles=args.log_every_shuffles,
-                    write_every_shuffles=args.write_every_shuffles,
-                    row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
-                )
-                rows_written += len(weight_rows)
-                rows_step += len(weight_rows)
-                print(
-                    f'Completed width={width} step={step} rep=weights '
-                    f'rows_rep={len(weight_rows)} rows_written={rows_written} '
-                    f'elapsed_s={(time.time() - t0):.2f}'
-                )
+                weights_rep_key = (width, step, 'weights')
+                if weights_rep_key in completed_reps:
+                    print(f'Skipping width={width} step={step} rep=weights (already complete in CSV)')
+                else:
+                    missing_artifacts = _missing_weight_artifacts(group_dirs, step)
+                    if missing_artifacts:
+                        preview = ', '.join(missing_artifacts[:2])
+                        if len(missing_artifacts) > 2:
+                            preview += f', ... (+{len(missing_artifacts) - 2} more)'
+                        print(
+                            f'Skipping width={width} step={step} rep=weights '
+                            f'(missing artifact files: {preview})'
+                        )
+                    else:
+                        t0 = time.time()
+                        print(f'Starting width={width} step={step} rep=weights')
+                        weight_chunks = [_extract_weights_from_artifacts(g, step) for g in group_dirs]
+                        weights = np.concatenate(weight_chunks, axis=0)
+                        num_members = weights.shape[0]
+                        weight_sim = _weight_similarity_matrix(weights)
+                        weight_rows = _analysis_rows_for_similarity(
+                            similarity_matrix=weight_sim,
+                            num_members=num_members,
+                            width=width,
+                            shuffle_repeats=args.shuffle_repeats,
+                            rng=rng,
+                            metric_payload=metric_payload,
+                            representation='weights',
+                            log_every_shuffles=args.log_every_shuffles,
+                            write_every_shuffles=args.write_every_shuffles,
+                            row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
+                        )
+                        rows_written += len(weight_rows)
+                        rows_step += len(weight_rows)
+                        completed_reps.add(weights_rep_key)
+                        print(
+                            f'Completed width={width} step={step} rep=weights '
+                            f'rows_rep={len(weight_rows)} rows_written={rows_written} '
+                            f'elapsed_s={(time.time() - t0):.2f}'
+                        )
 
                 # activations
-                t1 = time.time()
-                print(f'Starting width={width} step={step} rep=activations')
-                member_states = _collect_member_states(group_dirs, step, progress_label=f'w{width} p{step}')
-                t2 = time.time()
-                act_sim = _activation_similarity_matrix(
-                    member_states,
-                    width,
-                    probe_loader,
-                    progress_label=f'w{width} p{step}',
-                )
-                activation_rows = _analysis_rows_for_similarity(
-                    similarity_matrix=act_sim,
-                    num_members=len(member_states),
-                    width=width,
-                    shuffle_repeats=args.shuffle_repeats,
-                    rng=rng,
-                    metric_payload=metric_payload,
-                    representation='activations',
-                    log_every_shuffles=args.log_every_shuffles,
-                    write_every_shuffles=args.write_every_shuffles,
-                    row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
-                )
-                rows_written += len(activation_rows)
-                rows_step += len(activation_rows)
-                print(
-                    f'Completed width={width} step={step} rep=activations '
-                    f'rows_rep={len(activation_rows)} rows_written={rows_written} '
-                    f'restore_s={(t2 - t1):.2f} activation_sim_s={(time.time() - t2):.2f}'
-                )
+                activations_rep_key = (width, step, 'activations')
+                if activations_rep_key in completed_reps:
+                    print(f'Skipping width={width} step={step} rep=activations (already complete in CSV)')
+                else:
+                    t1 = time.time()
+                    print(f'Starting width={width} step={step} rep=activations')
+                    member_states = _collect_member_states(group_dirs, step, progress_label=f'w{width} p{step}')
+                    t2 = time.time()
+                    act_sim = _activation_similarity_matrix(
+                        member_states,
+                        width,
+                        probe_loader,
+                        progress_label=f'w{width} p{step}',
+                    )
+                    activation_rows = _analysis_rows_for_similarity(
+                        similarity_matrix=act_sim,
+                        num_members=len(member_states),
+                        width=width,
+                        shuffle_repeats=args.shuffle_repeats,
+                        rng=rng,
+                        metric_payload=metric_payload,
+                        representation='activations',
+                        log_every_shuffles=args.log_every_shuffles,
+                        write_every_shuffles=args.write_every_shuffles,
+                        row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
+                    )
+                    rows_written += len(activation_rows)
+                    rows_step += len(activation_rows)
+                    completed_reps.add(activations_rep_key)
+                    print(
+                        f'Completed width={width} step={step} rep=activations '
+                        f'rows_rep={len(activation_rows)} rows_written={rows_written} '
+                        f'restore_s={(t2 - t1):.2f} activation_sim_s={(time.time() - t2):.2f}'
+                    )
 
                 print(
                     f'Analyzed width={width} step={step} '
