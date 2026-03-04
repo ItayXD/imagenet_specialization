@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=imgnet-fast-tests
 #SBATCH --account=kempner_pehlevan_lab
-#SBATCH --partition=kempner_h100
+#SBATCH --partition=kempner
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
 #SBATCH --mem=8G

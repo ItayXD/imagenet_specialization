@@ -42,22 +42,22 @@ def main() -> None:
 
     if args.minibatch_size > 0:
         minibatch_size = args.minibatch_size
-    elif width >= 512 and cfg_minibatch_size > 256:
-        minibatch_size = 256
+    elif width >= 512 and cfg_minibatch_size > 128:
+        minibatch_size = 128
     else:
         minibatch_size = cfg_minibatch_size
 
     if args.microbatch_size > 0:
         microbatch_size = args.microbatch_size
-    elif width >= 512 and cfg_microbatch_size > 32:
-        microbatch_size = 32
+    elif width >= 512 and cfg_microbatch_size > 16:
+        microbatch_size = 16
     else:
         microbatch_size = cfg_microbatch_size
 
     if args.num_workers > 0:
         num_workers = args.num_workers
-    elif cfg_num_workers > 8:
-        num_workers = 8
+    elif cfg_num_workers > 4:
+        num_workers = 4
     else:
         num_workers = cfg_num_workers
 

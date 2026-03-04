@@ -43,11 +43,11 @@ def ensemble_subsets_for_width(width: int) -> int:
 
 
 def minibatch_size_for_width(width: int) -> int:
-    return 256 if width >= 512 else 1024
+    return 128 if width >= 512 else 1024
 
 
 def microbatch_size_for_width(width: int) -> int:
-    return 32 if width >= 512 else 128
+    return 16 if width >= 512 else 128
 
 
 
