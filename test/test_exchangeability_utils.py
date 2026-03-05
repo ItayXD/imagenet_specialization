@@ -8,6 +8,8 @@ from src.experiment.exchangeability_utils import (
     flatten_permute_reshape_indices,
     ks_w1_stats,
     make_target_points,
+    shuffled_similarity_values,
+    shuffled_similarity_values_batched,
 )
 
 
@@ -61,3 +63,34 @@ def test_ks_w1_stats_returns_metrics():
     assert 'ks_pvalue' in stats
     assert 'w1_distance' in stats
     assert stats['ks_distance'] >= 0.0
+
+
+def test_batched_shuffle_matches_scalar_sequence():
+    num_members = 4
+    width = 3
+    batch_size = 5
+    total = num_members * width
+
+    base_rng = np.random.default_rng(123)
+    sim = base_rng.normal(size=(total, total))
+    sim = (sim + sim.T) / 2.0
+
+    scalar_rng = np.random.default_rng(321)
+    scalar_across = []
+    scalar_within = []
+    for _ in range(batch_size):
+        across, within = shuffled_similarity_values(sim, num_members, width, scalar_rng)
+        scalar_across.append(across)
+        scalar_within.append(within)
+
+    batched_rng = np.random.default_rng(321)
+    batched_across, batched_within = shuffled_similarity_values_batched(
+        sim,
+        num_members,
+        width,
+        batched_rng,
+        batch_size=batch_size,
+    )
+
+    assert np.allclose(batched_across, np.stack(scalar_across))
+    assert np.allclose(batched_within, np.stack(scalar_within))

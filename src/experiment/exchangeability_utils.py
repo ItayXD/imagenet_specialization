@@ -68,23 +68,43 @@ def shuffled_similarity_values(
     width: int,
     rng: np.random.Generator,
 ) -> tuple[np.ndarray, np.ndarray]:
-    member_groups = flatten_permute_reshape_indices(num_members, width, rng)
+    across_batch, within_batch = shuffled_similarity_values_batched(
+        similarity_matrix=similarity_matrix,
+        num_members=num_members,
+        width=width,
+        rng=rng,
+        batch_size=1,
+    )
+    return across_batch[0], within_batch[0]
 
-    across_parts = []
-    within_parts = []
 
-    for e in range(num_members):
-        group_e = member_groups[e]
-        block = similarity_matrix[np.ix_(group_e, group_e)]
-        tri_i, tri_j = np.triu_indices(width, k=1)
-        within_parts.append(block[tri_i, tri_j])
+def shuffled_similarity_values_batched(
+    similarity_matrix: np.ndarray,
+    num_members: int,
+    width: int,
+    rng: np.random.Generator,
+    batch_size: int,
+) -> tuple[np.ndarray, np.ndarray]:
+    if batch_size <= 0:
+        raise ValueError('batch_size must be positive.')
 
-        for f in range(e + 1, num_members):
-            group_f = member_groups[f]
-            across_parts.append(similarity_matrix[np.ix_(group_e, group_f)].reshape(-1))
+    total = num_members * width
+    flat_permutations = np.empty((batch_size, total), dtype=np.int64)
+    for batch_idx in range(batch_size):
+        flat_permutations[batch_idx] = rng.permutation(total)
 
-    across = np.concatenate(across_parts) if across_parts else np.zeros((0,), dtype=np.float64)
-    within = np.concatenate(within_parts) if within_parts else np.zeros((0,), dtype=np.float64)
+    member_groups = flat_permutations.reshape((batch_size, num_members, width))
+
+    tri_i, tri_j = np.triu_indices(width, k=1)
+    within = similarity_matrix[member_groups[:, :, tri_i], member_groups[:, :, tri_j]]
+    within = within.reshape((batch_size, -1))
+
+    member_i, member_j = np.triu_indices(num_members, k=1)
+    group_i = member_groups[:, member_i, :]
+    group_j = member_groups[:, member_j, :]
+    across = similarity_matrix[group_i[:, :, :, None], group_j[:, :, None, :]]
+    across = across.reshape((batch_size, -1))
+
     return across, within
 
 
