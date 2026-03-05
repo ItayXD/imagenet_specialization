@@ -6,9 +6,11 @@ import pytest
 from scripts.analyze_exchangeability import _resolve_run_id
 
 
-def _make_dir(base: Path, name: str, mtime: int) -> None:
+def _make_dir(base: Path, name: str, mtime: int, with_width_layout: bool = True) -> None:
     path = base / name
     path.mkdir()
+    if with_width_layout:
+        (path / "width_32").mkdir()
     path.touch()
     path_ts = float(mtime)
     os.utime(path, (path_ts, path_ts))
@@ -41,3 +43,9 @@ def test_resolve_run_id_exact_mode_errors_when_exact_missing(tmp_path: Path) -> 
     _make_dir(tmp_path, "exchangeability_job1", 100)
     with pytest.raises(FileNotFoundError):
         _resolve_run_id(str(tmp_path), "exchangeability", "exact")
+
+
+def test_resolve_run_id_latest_prefix_ignores_similarity_cache_when_exact_exists(tmp_path: Path) -> None:
+    _make_dir(tmp_path, "exchangeability", 100, with_width_layout=True)
+    _make_dir(tmp_path, "exchangeability_metrics_w32_similarity", 200, with_width_layout=False)
+    assert _resolve_run_id(str(tmp_path), "exchangeability", "latest_prefix") == "exchangeability"
