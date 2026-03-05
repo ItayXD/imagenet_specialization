@@ -73,6 +73,9 @@ def num_workers_for_width(width: int) -> int:
 
 def build_p_targets() -> list[int]:
     return [
+        10000,
+        21544,
+        46415,
         100000,
         138949,
         193069,

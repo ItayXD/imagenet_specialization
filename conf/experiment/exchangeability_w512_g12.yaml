@@ -22,6 +22,9 @@ hyperparams:
         min_lr: 8.0e-05
       target_images_seen: 10000000
       p_targets_images_seen:
+      - 10000
+      - 21544
+      - 46415
       - 100000
       - 138949
       - 193069

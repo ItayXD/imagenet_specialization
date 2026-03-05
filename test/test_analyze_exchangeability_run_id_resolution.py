@@ -6,11 +6,12 @@ import pytest
 from scripts.analyze_exchangeability import _resolve_run_id
 
 
-def _make_dir(base: Path, name: str, mtime: int, with_width_layout: bool = True) -> None:
+def _make_dir(base: Path, name: str, mtime: int, with_run_layout: bool = True) -> None:
     path = base / name
     path.mkdir()
-    if with_width_layout:
+    if with_run_layout:
         (path / "width_32").mkdir()
+        (path / "width_32" / "group_0").mkdir()
     path.touch()
     path_ts = float(mtime)
     os.utime(path, (path_ts, path_ts))
@@ -46,6 +47,12 @@ def test_resolve_run_id_exact_mode_errors_when_exact_missing(tmp_path: Path) -> 
 
 
 def test_resolve_run_id_latest_prefix_ignores_similarity_cache_when_exact_exists(tmp_path: Path) -> None:
-    _make_dir(tmp_path, "exchangeability", 100, with_width_layout=True)
-    _make_dir(tmp_path, "exchangeability_metrics_w32_similarity", 200, with_width_layout=False)
+    _make_dir(tmp_path, "exchangeability", 100, with_run_layout=True)
+    # Cache folder has width_* but no group_* directories, so it must not be treated as a run.
+    cache_dir = tmp_path / "exchangeability_metrics_w32_similarity"
+    cache_width_dir = cache_dir / "width_32"
+    cache_width_dir.mkdir(parents=True)
+    path_ts = float(200)
+    os.utime(cache_dir, (path_ts, path_ts))
+    os.utime(cache_width_dir, (path_ts, path_ts))
     assert _resolve_run_id(str(tmp_path), "exchangeability", "latest_prefix") == "exchangeability"

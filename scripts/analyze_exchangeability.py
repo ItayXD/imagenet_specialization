@@ -158,8 +158,14 @@ def _is_run_dir(path: str) -> bool:
         return False
     try:
         for name in os.listdir(path):
-            if name.startswith('width_') and os.path.isdir(join(path, name)):
-                return True
+            if not name.startswith('width_'):
+                continue
+            width_dir = join(path, name)
+            if not os.path.isdir(width_dir):
+                continue
+            for child in os.listdir(width_dir):
+                if child.startswith('group_') and os.path.isdir(join(width_dir, child)):
+                    return True
     except Exception:
         return False
     return False

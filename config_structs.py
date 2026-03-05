@@ -5,6 +5,9 @@ from omegaconf import MISSING
 
 def _default_p_targets() -> list[int]:
     return [
+        10000,
+        21544,
+        46415,
         100000,
         138949,
         193069,
