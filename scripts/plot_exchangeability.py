@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import os
+from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -82,14 +83,67 @@ def _plot_metric(
     out_path: str,
     title: str,
     close: bool = True,
+    analysis_types: Sequence[str] | None = None,
+    analysis_labels: Mapping[str, str] | None = None,
+    analysis_colors: Mapping[str, str] | None = None,
+    representation_linestyles: Mapping[str, str] | None = None,
+    representation_order: Sequence[str] | None = None,
 ):
+    plot_df = curves.copy()
+    if analysis_types is not None:
+        allowed = set(analysis_types)
+        plot_df = plot_df[plot_df['analysis_type'].isin(allowed)].copy()
+
+    if plot_df.empty:
+        raise ValueError('No rows available for metric plotting after applying analysis-type filters.')
+
+    if representation_order is None:
+        ordered_representations = sorted(plot_df['representation'].astype(str).unique().tolist())
+    else:
+        present = set(plot_df['representation'].astype(str).unique().tolist())
+        ordered_representations = [rep for rep in representation_order if rep in present]
+        ordered_representations.extend(sorted(present - set(ordered_representations)))
+
     fig = plt.figure(figsize=(10, 6))
-    for (representation, analysis_type), sub in curves.groupby(['representation', 'analysis_type']):
-        for width, wsub in sub.groupby('width'):
-            wsub = wsub.sort_values('images_seen')
-            label = f'{representation}/{analysis_type} N={int(width)}'
-            plt.plot(wsub['images_seen'], wsub[metric], label=label)
-            plt.fill_between(wsub['images_seen'], wsub[lo], wsub[hi], alpha=0.12)
+    group_cols = ['analysis_type', 'width', 'representation']
+    for analysis_type, width, representation in sorted(
+        plot_df[group_cols].drop_duplicates().itertuples(index=False, name=None),
+        key=lambda t: (str(t[0]), float(t[1]), ordered_representations.index(str(t[2])) if str(t[2]) in ordered_representations else 10**9),
+    ):
+        sub = plot_df[
+            (plot_df['analysis_type'] == analysis_type)
+            & (plot_df['width'] == width)
+            & (plot_df['representation'] == representation)
+        ].sort_values('images_seen')
+        if sub.empty:
+            continue
+
+        display_analysis = (
+            analysis_labels.get(str(analysis_type), str(analysis_type))
+            if analysis_labels is not None
+            else str(analysis_type)
+        )
+        color = analysis_colors.get(str(analysis_type)) if analysis_colors is not None else None
+        linestyle = (
+            representation_linestyles.get(str(representation), '-')
+            if representation_linestyles is not None
+            else '-'
+        )
+        label = f'{display_analysis}/{representation} N={int(width)}'
+        plt.plot(
+            sub['images_seen'],
+            sub[metric],
+            label=label,
+            color=color,
+            linestyle=linestyle,
+        )
+        plt.fill_between(
+            sub['images_seen'],
+            sub[lo],
+            sub[hi],
+            alpha=0.12,
+            color=color,
+        )
 
     plt.xscale('log')
     plt.xlabel('Images seen (P)')
