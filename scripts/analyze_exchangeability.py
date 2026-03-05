@@ -110,13 +110,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         '--shuffle-batch-size',
         type=int,
-        default=1,
+        default=8,
         help='Number of shuffled permutations to generate in one vectorized batch',
     )
     parser.add_argument(
         '--shuffle-stats-workers',
         type=int,
-        default=1,
+        default=8,
         help='Thread workers for per-shuffle KS/W1 stats within each batch',
     )
     parser.add_argument(
