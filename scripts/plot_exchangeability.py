@@ -119,7 +119,7 @@ def _plot_train_val(
     return figures
 
 
-def _plot_within_observed_pvalues(
+def _plot_within_observed_significance(
     metrics_df: pd.DataFrame,
     out_dir: str,
     close: bool = True,
@@ -131,14 +131,44 @@ def _plot_within_observed_pvalues(
     if subset.empty:
         return []
 
+    null_counts = (
+        metrics_df[
+            (metrics_df['analysis_type'] == 'within_shuffled_vs_across_real')
+            & (metrics_df['shuffle_id'] >= 0)
+        ]
+        .groupby(['width', 'images_seen', 'representation'], as_index=False)
+        .size()
+        .rename(columns={'size': 'empirical_null_count'})
+    )
+    subset = subset.merge(
+        null_counts,
+        on=['width', 'images_seen', 'representation'],
+        how='left',
+    )
+
     metric_specs = [
-        ('ks_p_raw', 'KS Raw P-Value vs Images Seen', 'ks_p_raw_vs_images_seen.pdf'),
-        ('ks_p_empirical', 'KS Empirical P-Value vs Images Seen', 'ks_p_empirical_vs_images_seen.pdf'),
-        ('w1_p_empirical', 'W1 Empirical P-Value vs Images Seen', 'w1_p_empirical_vs_images_seen.pdf'),
+        (
+            'ks_sigma_two_sided',
+            'KS Raw Sigma (Two-Sided) vs Images Seen',
+            'ks_sigma_two_sided_vs_images_seen.pdf',
+            None,
+        ),
+        (
+            'ks_sigma_empirical_two_sided',
+            'KS Empirical Sigma (Two-Sided) vs Images Seen',
+            'ks_sigma_empirical_two_sided_vs_images_seen.pdf',
+            'ks_p_empirical',
+        ),
+        (
+            'w1_sigma_empirical_two_sided',
+            'W1 Empirical Sigma (Two-Sided) vs Images Seen',
+            'w1_sigma_empirical_two_sided_vs_images_seen.pdf',
+            'w1_p_empirical',
+        ),
     ]
 
     figures = []
-    for metric, title, filename in metric_specs:
+    for metric, title, filename, empirical_p_col in metric_specs:
         if metric not in subset.columns:
             continue
         plot_df = subset[np.isfinite(subset[metric])].copy()
@@ -151,10 +181,33 @@ def _plot_within_observed_pvalues(
             label = f'{representation} N={int(width)}'
             plt.plot(sub['images_seen'], sub[metric], marker='o', label=label)
 
+            # Mark finite-shuffle floor saturation points for empirical statistics.
+            if empirical_p_col and empirical_p_col in sub.columns and 'empirical_null_count' in sub.columns:
+                floor_p = 1.0 / (sub['empirical_null_count'] + 1.0)
+                floor_mask = (
+                    np.isfinite(sub[empirical_p_col].to_numpy())
+                    & np.isfinite(floor_p.to_numpy())
+                    & np.isclose(
+                        sub[empirical_p_col].to_numpy(),
+                        floor_p.to_numpy(),
+                        rtol=1e-6,
+                        atol=1e-12,
+                    )
+                )
+                if np.any(floor_mask):
+                    floor_sub = sub.loc[floor_mask]
+                    plt.scatter(
+                        floor_sub['images_seen'],
+                        floor_sub[metric],
+                        marker='x',
+                        s=40,
+                        linewidths=1.4,
+                        color='black',
+                        alpha=0.8,
+                        label=f'{label} (floor)',
+                    )
+
         plt.xscale('log')
-        positive_vals = plot_df[metric][plot_df[metric] > 0]
-        if not positive_vals.empty:
-            plt.yscale('log')
         plt.xlabel('Images seen (P)')
         plt.ylabel(metric.replace('_', ' ').title())
         plt.title(title)
@@ -197,7 +250,7 @@ def main() -> None:
     )
 
     _plot_train_val(df, args.output_dir)
-    _plot_within_observed_pvalues(df, args.output_dir)
+    _plot_within_observed_significance(df, args.output_dir)
 
     print(f'Wrote plots to {args.output_dir}')
 
