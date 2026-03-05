@@ -265,6 +265,106 @@ def _resolve_run_id(base_save_dir: str, run_id: str, resolution_mode: str) -> st
 
 
 
+def _resolve_width_dirs(
+    base_save_dir: str,
+    run_id: str,
+    resolution_mode: str,
+    requested_widths: list[int] | None = None,
+) -> tuple[dict[int, str], dict[int, str]]:
+    if not os.path.isdir(base_save_dir):
+        raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
+
+    requested_set = {int(w) for w in requested_widths} if requested_widths else None
+
+    def _filter_requested(width_dirs: dict[int, str]) -> dict[int, str]:
+        if requested_set is None:
+            return width_dirs
+        return {w: d for w, d in width_dirs.items() if w in requested_set}
+
+    exact_dir = join(base_save_dir, run_id)
+    has_exact = os.path.isdir(exact_dir)
+
+    prefix = f'{run_id}_'
+    raw_candidates: list[tuple[float, str]] = []
+    for name in os.listdir(base_save_dir):
+        path = join(base_save_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if not name.startswith(prefix):
+            continue
+        raw_candidates.append((os.path.getmtime(path), name))
+
+    run_candidates = [c for c in raw_candidates if _is_run_dir(join(base_save_dir, c[1]))]
+    if run_candidates:
+        prefix_candidates = run_candidates
+        dropped = len(raw_candidates) - len(run_candidates)
+        if dropped > 0:
+            print(
+                f'Run id resolution: ignoring {dropped} non-run "{prefix}*" directories '
+                f'(missing width_* layout).'
+            )
+    elif has_exact:
+        # If exact exists, avoid picking unrelated prefix dirs (e.g. similarity caches).
+        prefix_candidates = []
+    else:
+        # Backward-compatible fallback when no exact run exists.
+        prefix_candidates = raw_candidates
+
+    if resolution_mode == 'exact':
+        if not has_exact:
+            raise FileNotFoundError(
+                f'Run id "{run_id}" not found under {base_save_dir} (exact resolution mode).'
+            )
+        width_dirs = _filter_requested(_list_width_dirs(base_save_dir, run_id))
+        width_sources = {w: run_id for w in width_dirs}
+        return width_dirs, width_sources
+
+    candidates: list[tuple[float, str]] = []
+    if resolution_mode == 'latest_prefix':
+        if prefix_candidates:
+            candidates = list(prefix_candidates)
+        elif has_exact:
+            print(
+                f'Run id resolution requested latest_prefix, but no "{prefix}*" dirs found. '
+                f'Falling back to exact run "{run_id}".'
+            )
+            width_dirs = _filter_requested(_list_width_dirs(base_save_dir, run_id))
+            width_sources = {w: run_id for w in width_dirs}
+            return width_dirs, width_sources
+        else:
+            raise FileNotFoundError(
+                f'No "{prefix}*" runs found under {base_save_dir}, and exact run "{run_id}" is missing.'
+            )
+    else:
+        # auto: choose newest source per width across exact and suffixed runs.
+        candidates = list(prefix_candidates)
+        if has_exact:
+            candidates.append((os.path.getmtime(exact_dir), run_id))
+        if not candidates:
+            raise FileNotFoundError(
+                f'Run id "{run_id}" not found under {base_save_dir}, and no "{prefix}*" runs were found.'
+            )
+
+    candidates.sort(key=lambda x: x[0], reverse=True)
+    width_dirs: dict[int, str] = {}
+    width_sources: dict[int, str] = {}
+    for _, candidate_run in candidates:
+        candidate_width_dirs = _filter_requested(_list_width_dirs(base_save_dir, candidate_run))
+        for width, width_dir in candidate_width_dirs.items():
+            if width not in width_dirs:
+                width_dirs[width] = width_dir
+                width_sources[width] = candidate_run
+        if requested_set is not None and len(width_dirs) >= len(requested_set):
+            break
+
+    if width_sources:
+        mapping = ', '.join(f'w{w}->{src}' for w, src in sorted(width_sources.items()))
+        print(f'Run id "{run_id}" resolved via {resolution_mode} per width: {mapping}')
+
+    return width_dirs, width_sources
+
+
+
 def _list_group_dirs(width_dir: str) -> list[str]:
     return sorted(glob(join(width_dir, 'group_*')))
 
@@ -1006,16 +1106,18 @@ def _prepare_resume_state(
 def main() -> None:
     args = parse_args()
 
-    resolved_run_id = _resolve_run_id(args.base_save_dir, args.run_id, args.run_id_resolution)
-    width_dirs = _list_width_dirs(args.base_save_dir, resolved_run_id)
+    width_dirs, _ = _resolve_width_dirs(
+        base_save_dir=args.base_save_dir,
+        run_id=args.run_id,
+        resolution_mode=args.run_id_resolution,
+        requested_widths=args.widths,
+    )
     if not width_dirs:
+        if args.widths:
+            raise RuntimeError(f'No matching widths found for requested filter: {args.widths}')
         raise RuntimeError(
-            f'No width directories found for run_id="{resolved_run_id}" under {args.base_save_dir}.'
+            f'No width directories found for run_id="{args.run_id}" under {args.base_save_dir}.'
         )
-    if args.widths:
-        width_dirs = {w: d for w, d in width_dirs.items() if w in set(args.widths)}
-    if not width_dirs:
-        raise RuntimeError(f'No matching widths found for requested filter: {args.widths}')
 
     probe_loader = _build_probe_loader(args.probe_batch_size, args.probe_seed, args.probe_loader_batch_size)
     rng = np.random.default_rng(args.probe_seed)

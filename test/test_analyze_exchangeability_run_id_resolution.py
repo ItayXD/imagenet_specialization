@@ -3,15 +3,22 @@ from pathlib import Path
 
 import pytest
 
-from scripts.analyze_exchangeability import _resolve_run_id
+from scripts.analyze_exchangeability import _resolve_run_id, _resolve_width_dirs
 
 
-def _make_dir(base: Path, name: str, mtime: int, with_run_layout: bool = True) -> None:
+def _make_dir(
+    base: Path,
+    name: str,
+    mtime: int,
+    with_run_layout: bool = True,
+    widths: tuple[int, ...] = (32,),
+) -> None:
     path = base / name
     path.mkdir()
     if with_run_layout:
-        (path / "width_32").mkdir()
-        (path / "width_32" / "group_0").mkdir()
+        for width in widths:
+            (path / f"width_{width}").mkdir()
+            (path / f"width_{width}" / "group_0").mkdir()
     path.touch()
     path_ts = float(mtime)
     os.utime(path, (path_ts, path_ts))
@@ -56,3 +63,37 @@ def test_resolve_run_id_latest_prefix_ignores_similarity_cache_when_exact_exists
     os.utime(cache_dir, (path_ts, path_ts))
     os.utime(cache_width_dir, (path_ts, path_ts))
     assert _resolve_run_id(str(tmp_path), "exchangeability", "latest_prefix") == "exchangeability"
+
+
+def test_resolve_width_dirs_latest_prefix_picks_latest_per_requested_width(tmp_path: Path) -> None:
+    _make_dir(tmp_path, "exchangeability_job1", 100, widths=(32,))
+    _make_dir(tmp_path, "exchangeability_job2", 200, widths=(64,))
+    _make_dir(tmp_path, "exchangeability_job3", 300, widths=(32,))
+
+    width_dirs, width_sources = _resolve_width_dirs(
+        str(tmp_path),
+        "exchangeability",
+        "latest_prefix",
+        requested_widths=[32, 64],
+    )
+
+    assert set(width_dirs.keys()) == {32, 64}
+    assert width_sources[32] == "exchangeability_job3"
+    assert width_sources[64] == "exchangeability_job2"
+
+
+def test_resolve_width_dirs_auto_uses_newest_source_per_width(tmp_path: Path) -> None:
+    _make_dir(tmp_path, "exchangeability", 250, widths=(64,))
+    _make_dir(tmp_path, "exchangeability_job1", 100, widths=(64,))
+    _make_dir(tmp_path, "exchangeability_job2", 300, widths=(32,))
+
+    width_dirs, width_sources = _resolve_width_dirs(
+        str(tmp_path),
+        "exchangeability",
+        "auto",
+        requested_widths=[32, 64],
+    )
+
+    assert set(width_dirs.keys()) == {32, 64}
+    assert width_sources[32] == "exchangeability_job2"
+    assert width_sources[64] == "exchangeability"
