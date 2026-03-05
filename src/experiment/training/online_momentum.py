@@ -14,7 +14,6 @@ import optax
 import orbax
 from flax.training import checkpoints, train_state
 from jax import ShapeDtypeStruct, jit, tree_map, value_and_grad, vmap
-from jax.lax import scan
 from jax.random import split
 
 from src.experiment.model.flax_mup.mup import Mup
@@ -222,6 +221,8 @@ def train(
     learning_rate_fn,
 ):
     tranche_size = train_loader.batch_size
+    if tranche_size % batch_size != 0:
+        raise ValueError("'microbatch_size' must divide 'minibatch_size'.")
     num_batches = tranche_size // batch_size
 
     if num_batches <= 0:
@@ -244,22 +245,13 @@ def train(
             return loss, update_bs
 
         loss_grad_fn = value_and_grad(loss_fn, has_aux=True)
-
-        def step(step_state: TrainState, data: tuple) -> TrainState:
-            batch, labels = data
-            (_, update_bs), grads = loss_grad_fn(step_state.params, step_state.batch_stats, step_state.mup, batch, labels)
-            return step_state.apply_gradients(grads=grads, batch_stats=update_bs), None
-
-        updated_state, _ = scan(step, state, (Xtr_sb, ytr_sb))
-        return updated_state
+        (_, update_bs), grads = loss_grad_fn(state.params, state.batch_stats, state.mup, Xtr_sb, ytr_sb)
+        return state.apply_gradients(grads=grads, batch_stats=update_bs)
 
     @jit
     def update(state: TrainState, Xtr: chex.ArrayDevice, ytr: chex.ArrayDevice):
-        Xtr_sb = Xtr.reshape((num_batches, batch_size, *Xtr.shape[1:]))
-        ytr_sb = ytr.reshape((num_batches, batch_size, *ytr.shape[1:]))
-
         def partial_subset_update(state_stacked):
-            return _subset_update(state_stacked, Xtr_sb, ytr_sb)
+            return _subset_update(state_stacked, Xtr, ytr)
 
         return jax.lax.map(partial_subset_update, state)
 
@@ -293,6 +285,33 @@ def train(
         y_jnp = jnp.array(y_list)
         return x_jnp, y_jnp
 
+    def tranche_to_host(batch):
+        x_ch, y_list = batch
+        x_host = np.asarray(x_ch)
+        y_host = np.asarray(y_list)
+        return x_host, y_host
+
+    def compute_tranche_train_metrics(state, x_host: np.ndarray, y_host: np.ndarray) -> tuple[float, float]:
+        total_loss = 0.0
+        total_error = 0.0
+        total_examples = 0
+
+        for micro_idx in range(num_batches):
+            start_idx = micro_idx * batch_size
+            end_idx = start_idx + batch_size
+            x_mb = jnp.array(x_host[start_idx:end_idx], dtype=data_dtype)
+            y_mb = jnp.array(y_host[start_idx:end_idx])
+
+            train_logits_mb = predict_logits(state.params, state.batch_stats, state.mup, x_mb)
+            train_loss_mb, train_error_mb = _compute_loss_error(train_logits_mb, y_mb)
+
+            mb_examples = int(y_mb.shape[0])
+            total_loss += train_loss_mb * mb_examples
+            total_error += train_error_mb * mb_examples
+            total_examples += mb_examples
+
+        return total_loss / total_examples, total_error / total_examples
+
     val_x, val_y = loader_to_jax(val_data)
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
@@ -320,8 +339,14 @@ def train(
 
     while images_seen < target_images_seen:
         for tranche in train_loader:
-            x, y = loader_to_jax(tranche)
-            state = update(state, x, y)
+            x_host, y_host = tranche_to_host(tranche)
+            for micro_idx in range(num_batches):
+                start_idx = micro_idx * batch_size
+                end_idx = start_idx + batch_size
+                x_mb = jnp.array(x_host[start_idx:end_idx], dtype=data_dtype)
+                y_mb = jnp.array(y_host[start_idx:end_idx])
+                state = update(state, x_mb, y_mb)
+
             tranches_seen += 1
             images_seen += tranche_size
 
@@ -354,13 +379,19 @@ def train(
                         step=images_seen,
                     )
 
+            train_metrics = None
+            val_metrics = None
             while target_index < len(target_points) and images_seen >= target_points[target_index]:
                 target_p = target_points[target_index]
 
-                train_logits = predict_logits(state.params, state.batch_stats, state.mup, x)
-                val_logits = predict_logits(state.params, state.batch_stats, state.mup, val_x)
-                train_loss, train_error = _compute_loss_error(train_logits, y)
-                val_loss, val_error = _compute_loss_error(val_logits, val_y)
+                if train_metrics is None:
+                    train_metrics = compute_tranche_train_metrics(state, x_host, y_host)
+                if val_metrics is None:
+                    val_logits = predict_logits(state.params, state.batch_stats, state.mup, val_x)
+                    val_metrics = _compute_loss_error(val_logits, val_y)
+
+                train_loss, train_error = train_metrics
+                val_loss, val_error = val_metrics
 
                 checkpoints.save_checkpoint(
                     ckpt_dir=run_paths['state_ckpt_dir'],

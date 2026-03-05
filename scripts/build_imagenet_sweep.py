@@ -51,12 +51,7 @@ def num_groups_for_width(width: int) -> int:
 
 
 def minibatch_size_for_width(width: int) -> int:
-    if width == 256:
-        return 256
-    if width == 128:
-        return 512
-    if width >= 512:
-        return 128
+    del width
     return 1024
 
 
@@ -116,7 +111,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
             task_seed = rng.randrange(0, 10**9)
 
             tp = TrainingParams(
-                eta_0=8e-3,
+                eta_0=6e-3,
                 minibatch_size=minibatch_size_for_width(width),
                 microbatch_size=microbatch_size_for_width(width),
                 num_workers=num_workers_for_width(width),
