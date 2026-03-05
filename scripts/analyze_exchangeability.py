@@ -9,6 +9,7 @@ import re
 import sys
 import time
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 from glob import glob
 from os.path import join
 from typing import Callable
@@ -28,6 +29,7 @@ from src.experiment.exchangeability_utils import (
     extract_across_values,
     extract_within_values,
     ks_w1_stats,
+    shuffled_similarity_values_batched,
     shuffled_similarity_values,
     two_sided_sigma_from_p,
 )
@@ -105,6 +107,18 @@ def parse_args() -> argparse.Namespace:
         ),
     )
     parser.add_argument('--shuffle-repeats', type=int, default=2000, help='Number of shuffle repeats')
+    parser.add_argument(
+        '--shuffle-batch-size',
+        type=int,
+        default=1,
+        help='Number of shuffled permutations to generate in one vectorized batch',
+    )
+    parser.add_argument(
+        '--shuffle-stats-workers',
+        type=int,
+        default=1,
+        help='Thread workers for per-shuffle KS/W1 stats within each batch',
+    )
     parser.add_argument(
         '--log-every-shuffles',
         type=int,
@@ -596,6 +610,8 @@ def _analysis_rows_for_similarity(
     num_members: int,
     width: int,
     shuffle_repeats: int,
+    shuffle_batch_size: int,
+    shuffle_stats_workers: int,
     rng: np.random.Generator,
     metric_payload: dict,
     representation: str,
@@ -604,6 +620,11 @@ def _analysis_rows_for_similarity(
     similarity_output_dir: str | None,
     row_callback: Callable[[list[dict]], None] | None = None,
 ):
+    if shuffle_batch_size <= 0:
+        raise ValueError('shuffle_batch_size must be positive.')
+    if shuffle_stats_workers <= 0:
+        raise ValueError('shuffle_stats_workers must be positive.')
+
     rows = []
     pending_rows: list[dict] = []
     member_ids = build_member_ids(num_members, width)
@@ -646,57 +667,106 @@ def _analysis_rows_for_similarity(
         total=shuffle_repeats,
         leave=False,
     )
-    for shuffle_id in shuffle_iter:
-        across_shuf, within_shuf = shuffled_similarity_values(similarity_matrix, num_members, width, rng)
+    batch_across = None
+    batch_within = None
+    batch_stats = None
+    batch_start = 0
 
-        baseline_stats = ks_w1_stats(across_real, across_shuf)
-        baseline_row = {
-            **metric_payload,
-            'representation': representation,
-            'analysis_type': 'across_real_vs_across_shuffled',
-            'shuffle_id': shuffle_id,
-            'ks_distance': baseline_stats['ks_distance'],
-            'ks_p_raw': baseline_stats['ks_pvalue'],
-            'ks_sigma_two_sided': two_sided_sigma_from_p(baseline_stats['ks_pvalue']),
-            'w1_distance': baseline_stats['w1_distance'],
-        }
-        _set_empirical_fields(baseline_row, np.nan, np.nan)
-        rows.append(baseline_row)
-        pending_rows.append(baseline_row)
+    def _stats_for_offset(offset: int):
+        assert batch_across is not None
+        assert batch_within is not None
+        across_shuf_local = batch_across[offset]
+        within_shuf_local = batch_within[offset]
+        return (
+            ks_w1_stats(across_real, across_shuf_local),
+            ks_w1_stats(within_shuf_local, across_real),
+        )
 
-        diag_shuffle_stats = ks_w1_stats(within_shuf, across_real)
-        diag_shuffle_row = {
-            **metric_payload,
-            'representation': representation,
-            'analysis_type': 'within_shuffled_vs_across_real',
-            'shuffle_id': shuffle_id,
-            'ks_distance': diag_shuffle_stats['ks_distance'],
-            'ks_p_raw': diag_shuffle_stats['ks_pvalue'],
-            'ks_sigma_two_sided': two_sided_sigma_from_p(diag_shuffle_stats['ks_pvalue']),
-            'w1_distance': diag_shuffle_stats['w1_distance'],
-        }
-        _set_empirical_fields(diag_shuffle_row, np.nan, np.nan)
-        rows.append(diag_shuffle_row)
-        pending_rows.append(diag_shuffle_row)
-        diag_shuffle_ks_null.append(float(diag_shuffle_stats['ks_distance']))
-        diag_shuffle_w1_null.append(float(diag_shuffle_stats['w1_distance']))
+    stats_executor = (
+        ThreadPoolExecutor(max_workers=shuffle_stats_workers)
+        if shuffle_stats_workers > 1
+        else None
+    )
+    try:
+        for shuffle_id in shuffle_iter:
+            if batch_across is None or (shuffle_id - batch_start) >= batch_across.shape[0]:
+                batch_start = shuffle_id
+                current_batch = min(shuffle_batch_size, shuffle_repeats - shuffle_id)
+                if current_batch == 1:
+                    across_shuf_single, within_shuf_single = shuffled_similarity_values(
+                        similarity_matrix,
+                        num_members,
+                        width,
+                        rng,
+                    )
+                    batch_across = across_shuf_single.reshape((1, -1))
+                    batch_within = within_shuf_single.reshape((1, -1))
+                else:
+                    batch_across, batch_within = shuffled_similarity_values_batched(
+                        similarity_matrix=similarity_matrix,
+                        num_members=num_members,
+                        width=width,
+                        rng=rng,
+                        batch_size=current_batch,
+                    )
 
-        if (
-            log_every_shuffles > 0
-            and ((shuffle_id + 1) % log_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
-        ):
-            print(
-                f"  width={metric_payload['width']} step={metric_payload['images_seen']} "
-                f"rep={representation}: shuffles {shuffle_id + 1}/{shuffle_repeats}"
-            )
+                if stats_executor is None:
+                    batch_stats = [_stats_for_offset(idx) for idx in range(current_batch)]
+                else:
+                    batch_stats = list(stats_executor.map(_stats_for_offset, range(current_batch)))
 
-        if (
-            row_callback is not None
-            and write_every_shuffles > 0
-            and ((shuffle_id + 1) % write_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
-        ):
-            row_callback(pending_rows)
-            pending_rows = []
+            offset = shuffle_id - batch_start
+            assert batch_stats is not None
+            baseline_stats, diag_shuffle_stats = batch_stats[offset]
+            baseline_row = {
+                **metric_payload,
+                'representation': representation,
+                'analysis_type': 'across_real_vs_across_shuffled',
+                'shuffle_id': shuffle_id,
+                'ks_distance': baseline_stats['ks_distance'],
+                'ks_p_raw': baseline_stats['ks_pvalue'],
+                'ks_sigma_two_sided': two_sided_sigma_from_p(baseline_stats['ks_pvalue']),
+                'w1_distance': baseline_stats['w1_distance'],
+            }
+            _set_empirical_fields(baseline_row, np.nan, np.nan)
+            rows.append(baseline_row)
+            pending_rows.append(baseline_row)
+
+            diag_shuffle_row = {
+                **metric_payload,
+                'representation': representation,
+                'analysis_type': 'within_shuffled_vs_across_real',
+                'shuffle_id': shuffle_id,
+                'ks_distance': diag_shuffle_stats['ks_distance'],
+                'ks_p_raw': diag_shuffle_stats['ks_pvalue'],
+                'ks_sigma_two_sided': two_sided_sigma_from_p(diag_shuffle_stats['ks_pvalue']),
+                'w1_distance': diag_shuffle_stats['w1_distance'],
+            }
+            _set_empirical_fields(diag_shuffle_row, np.nan, np.nan)
+            rows.append(diag_shuffle_row)
+            pending_rows.append(diag_shuffle_row)
+            diag_shuffle_ks_null.append(float(diag_shuffle_stats['ks_distance']))
+            diag_shuffle_w1_null.append(float(diag_shuffle_stats['w1_distance']))
+
+            if (
+                log_every_shuffles > 0
+                and ((shuffle_id + 1) % log_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
+            ):
+                print(
+                    f"  width={metric_payload['width']} step={metric_payload['images_seen']} "
+                    f"rep={representation}: shuffles {shuffle_id + 1}/{shuffle_repeats}"
+                )
+
+            if (
+                row_callback is not None
+                and write_every_shuffles > 0
+                and ((shuffle_id + 1) % write_every_shuffles == 0 or (shuffle_id + 1) == shuffle_repeats)
+            ):
+                row_callback(pending_rows)
+                pending_rows = []
+    finally:
+        if stats_executor is not None:
+            stats_executor.shutdown(wait=True)
 
     ks_empirical = _empirical_upper_tail_p(
         observed=float(diag_row['ks_distance']),
@@ -1039,6 +1109,8 @@ def main() -> None:
                             num_members=num_members,
                             width=width,
                             shuffle_repeats=args.shuffle_repeats,
+                            shuffle_batch_size=args.shuffle_batch_size,
+                            shuffle_stats_workers=args.shuffle_stats_workers,
                             rng=rng,
                             metric_payload=metric_payload,
                             representation='weights',
@@ -1082,6 +1154,8 @@ def main() -> None:
                         num_members=len(member_states),
                         width=width,
                         shuffle_repeats=args.shuffle_repeats,
+                        shuffle_batch_size=args.shuffle_batch_size,
+                        shuffle_stats_workers=args.shuffle_stats_workers,
                         rng=rng,
                         metric_payload=metric_payload,
                         representation='activations',
