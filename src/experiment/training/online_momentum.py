@@ -279,40 +279,47 @@ def train(
         pred_all = vmap(pred_within, in_axes=(0, 0, 0))
         return pred_all(params, batch_stats, mup_vars)
 
-    def loader_to_jax(batch):
-        x_ch, y_list = batch
-        x_jnp = jnp.array(x_ch, dtype=data_dtype)
-        y_jnp = jnp.array(y_list)
-        return x_jnp, y_jnp
-
     def tranche_to_host(batch):
         x_ch, y_list = batch
         x_host = np.asarray(x_ch)
         y_host = np.asarray(y_list)
         return x_host, y_host
 
-    def compute_tranche_train_metrics(state, x_host: np.ndarray, y_host: np.ndarray) -> tuple[float, float]:
+    def compute_metrics_on_host(
+        state,
+        x_host: np.ndarray,
+        y_host: np.ndarray,
+        eval_batch_size: int,
+    ) -> tuple[float, float]:
         total_loss = 0.0
         total_error = 0.0
         total_examples = 0
 
-        for micro_idx in range(num_batches):
-            start_idx = micro_idx * batch_size
-            end_idx = start_idx + batch_size
+        for start_idx in range(0, len(y_host), eval_batch_size):
+            end_idx = min(start_idx + eval_batch_size, len(y_host))
             x_mb = jnp.array(x_host[start_idx:end_idx], dtype=data_dtype)
             y_mb = jnp.array(y_host[start_idx:end_idx])
 
-            train_logits_mb = predict_logits(state.params, state.batch_stats, state.mup, x_mb)
-            train_loss_mb, train_error_mb = _compute_loss_error(train_logits_mb, y_mb)
+            logits_mb = predict_logits(state.params, state.batch_stats, state.mup, x_mb)
+            loss_mb, error_mb = _compute_loss_error(logits_mb, y_mb)
 
             mb_examples = int(y_mb.shape[0])
-            total_loss += train_loss_mb * mb_examples
-            total_error += train_error_mb * mb_examples
+            total_loss += loss_mb * mb_examples
+            total_error += error_mb * mb_examples
             total_examples += mb_examples
 
         return total_loss / total_examples, total_error / total_examples
 
-    val_x, val_y = loader_to_jax(val_data)
+    val_x_host, val_y_host = tranche_to_host(val_data)
+    probe_batch_size = int(training_params.get('probe_batch_size', batch_size))
+    if probe_batch_size <= 0:
+        probe_batch_size = batch_size
+    eval_batch_size = min(probe_batch_size, batch_size)
+    if eval_batch_size < probe_batch_size:
+        info(
+            f'capping probe_batch_size={probe_batch_size} to microbatch_size={batch_size} '
+            'to avoid large eval allocations.'
+        )
 
     checkpointer = orbax.checkpoint.PyTreeCheckpointer()
     run_paths = _resolve_run_dirs(training_params, N, n_ensemble)
@@ -385,10 +392,14 @@ def train(
                 target_p = target_points[target_index]
 
                 if train_metrics is None:
-                    train_metrics = compute_tranche_train_metrics(state, x_host, y_host)
+                    train_metrics = compute_metrics_on_host(state, x_host, y_host, batch_size)
                 if val_metrics is None:
-                    val_logits = predict_logits(state.params, state.batch_stats, state.mup, val_x)
-                    val_metrics = _compute_loss_error(val_logits, val_y)
+                    val_metrics = compute_metrics_on_host(
+                        state,
+                        val_x_host,
+                        val_y_host,
+                        eval_batch_size,
+                    )
 
                 train_loss, train_error = train_metrics
                 val_loss, val_error = val_metrics
