@@ -6,6 +6,7 @@ import os
 from typing import Mapping, Sequence
 
 import matplotlib.pyplot as plt
+import matplotlib.colors as mcolors
 import numpy as np
 import pandas as pd
 
@@ -86,6 +87,8 @@ def _plot_metric(
     analysis_types: Sequence[str] | None = None,
     analysis_labels: Mapping[str, str] | None = None,
     analysis_colors: Mapping[str, str] | None = None,
+    width_colors: Mapping[int | str, str] | None = None,
+    analysis_color_adjust: Mapping[str, float] | None = None,
     representation_linestyles: Mapping[str, str] | None = None,
     representation_order: Sequence[str] | None = None,
 ):
@@ -123,7 +126,20 @@ def _plot_metric(
             if analysis_labels is not None
             else str(analysis_type)
         )
-        color = analysis_colors.get(str(analysis_type)) if analysis_colors is not None else None
+        color = None
+        if width_colors is not None:
+            width_int = int(width)
+            width_key = width_int if width_int in width_colors else str(width_int)
+            base_color = width_colors.get(width_key)
+            if base_color is not None and analysis_color_adjust is not None:
+                adjust = float(analysis_color_adjust.get(str(analysis_type), 0.0))
+                if adjust > 0.0:
+                    base_rgba = np.asarray(mcolors.to_rgba(base_color), dtype=np.float64)
+                    white = np.array([1.0, 1.0, 1.0, base_rgba[3]], dtype=np.float64)
+                    base_color = tuple(((1.0 - adjust) * base_rgba + adjust * white).tolist())
+            color = base_color
+        elif analysis_colors is not None:
+            color = analysis_colors.get(str(analysis_type))
         linestyle = (
             representation_linestyles.get(str(representation), '-')
             if representation_linestyles is not None
