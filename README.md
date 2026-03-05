@@ -250,15 +250,15 @@ Or submit one width:
 sbatch conf/slurm_jobs/submit_exchangeability_w512.sbatch
 ```
 
-### Pinned Per-Width Times (2026-03-04 timing sweep)
+### Pinned Per-Width Times (2026-03-05 update; w32/w64/w128 from 2026-03-04 sweep)
 
 These files are checked in and already pinned to the measured `selected` times:
 
 1. `conf/slurm_jobs/submit_exchangeability_w32.sbatch` -> `04:17:58`
 2. `conf/slurm_jobs/submit_exchangeability_w64.sbatch` -> `05:57:25`
 3. `conf/slurm_jobs/submit_exchangeability_w128.sbatch` -> `09:26:25`
-4. `conf/slurm_jobs/submit_exchangeability_w256.sbatch` -> `11:56:37`
-5. `conf/slurm_jobs/submit_exchangeability_w512.sbatch` -> `13:17:00`
+4. `conf/slurm_jobs/submit_exchangeability_w256.sbatch` -> `22:01:47`
+5. `conf/slurm_jobs/submit_exchangeability_w512.sbatch` -> `26:14:56`
 
 Associated manifests are also checked in:
 
