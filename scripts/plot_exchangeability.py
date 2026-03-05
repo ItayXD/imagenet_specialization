@@ -19,6 +19,19 @@ def parse_args() -> argparse.Namespace:
 
 
 def _prepare(df: pd.DataFrame) -> pd.DataFrame:
+    required_cols = [
+        'width',
+        'images_seen',
+        'representation',
+        'analysis_type',
+    ]
+    missing_required = [col for col in required_cols if col not in df.columns]
+    if missing_required:
+        raise ValueError(
+            f'Input CSV is missing required columns: {missing_required}. '
+            f'Expected raw analysis output from analyze_exchangeability.py (not summary CSVs).'
+        )
+
     numeric_cols = [
         'width',
         'images_seen',
@@ -37,7 +50,10 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
         'val_error',
     ]
     for col in numeric_cols:
-        df[col] = pd.to_numeric(df[col], errors='coerce')
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors='coerce')
+        else:
+            df[col] = np.nan
     return df
 
 
