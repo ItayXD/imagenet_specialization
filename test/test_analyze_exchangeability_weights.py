@@ -1,6 +1,8 @@
 import numpy as np
 
 from scripts.analyze_exchangeability import _extract_weights_from_artifacts
+from scripts.analyze_exchangeability import _save_similarity_distributions
+from scripts.analyze_exchangeability import _similarity_npz_path
 
 
 def _f32_to_bf16_raw(arr: np.ndarray) -> np.ndarray:
@@ -31,3 +33,33 @@ def test_extract_weights_from_v2_bfloat16_artifact(tmp_path):
     assert loaded.dtype == np.float32
     assert loaded.shape == original.shape
     assert np.allclose(loaded, expected)
+
+
+def test_save_similarity_distributions_writes_compressed_npz(tmp_path):
+    similarity_dir = tmp_path / 'similarity_cache'
+    width = 32
+    step = 4096
+    representation = 'weights'
+    within_real = np.linspace(0.1, 0.9, 11, dtype=np.float64)
+    across_real = np.linspace(0.0, 1.0, 17, dtype=np.float64)
+
+    out_path = _save_similarity_distributions(
+        similarity_output_dir=str(similarity_dir),
+        width=width,
+        images_seen=step,
+        representation=representation,
+        within_real=within_real,
+        across_real=across_real,
+    )
+
+    expected_path = _similarity_npz_path(str(similarity_dir), width, step, representation)
+    assert out_path == expected_path
+
+    loaded = np.load(out_path)
+    assert loaded['within_real'].dtype == np.float32
+    assert loaded['across_real'].dtype == np.float32
+    assert np.allclose(loaded['within_real'], within_real.astype(np.float32))
+    assert np.allclose(loaded['across_real'], across_real.astype(np.float32))
+    assert int(loaded['width']) == width
+    assert int(loaded['images_seen']) == step
+    assert str(loaded['representation']) == representation

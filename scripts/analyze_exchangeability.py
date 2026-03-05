@@ -69,6 +69,14 @@ def parse_args() -> argparse.Namespace:
         help='How to resolve --run-id when both exact and suffixed runs exist.',
     )
     parser.add_argument('--output-csv', default='outputs/exchangeability_metrics.csv', help='Output CSV path')
+    parser.add_argument(
+        '--similarity-output-dir',
+        default='',
+        help=(
+            'Directory for compressed per-step similarity distributions used by ECDF plots. '
+            'Defaults to "<output_csv_stem>_similarity" next to --output-csv.'
+        ),
+    )
     parser.add_argument('--shuffle-repeats', type=int, default=2000, help='Number of shuffle repeats')
     parser.add_argument(
         '--log-every-shuffles',
@@ -481,6 +489,46 @@ def _collect_member_states(group_dirs: list[str], step: int, progress_label: str
 
 
 
+def _default_similarity_output_dir(output_csv: str) -> str:
+    csv_path = os.path.abspath(output_csv)
+    csv_dir = os.path.dirname(csv_path)
+    csv_stem = os.path.splitext(os.path.basename(csv_path))[0]
+    return os.path.join(csv_dir, f'{csv_stem}_similarity')
+
+
+
+def _similarity_npz_path(similarity_output_dir: str, width: int, images_seen: int, representation: str) -> str:
+    return join(
+        similarity_output_dir,
+        f'width_{int(width)}',
+        f'step_{int(images_seen)}',
+        f'{representation}.npz',
+    )
+
+
+
+def _save_similarity_distributions(
+    similarity_output_dir: str,
+    width: int,
+    images_seen: int,
+    representation: str,
+    within_real: np.ndarray,
+    across_real: np.ndarray,
+) -> str:
+    out_path = _similarity_npz_path(similarity_output_dir, width, images_seen, representation)
+    os.makedirs(os.path.dirname(out_path), exist_ok=True)
+    np.savez_compressed(
+        out_path,
+        within_real=np.asarray(within_real, dtype=np.float32),
+        across_real=np.asarray(across_real, dtype=np.float32),
+        width=np.int32(width),
+        images_seen=np.int64(images_seen),
+        representation=np.asarray(representation),
+    )
+    return out_path
+
+
+
 def _analysis_rows_for_similarity(
     similarity_matrix: np.ndarray,
     num_members: int,
@@ -491,6 +539,7 @@ def _analysis_rows_for_similarity(
     representation: str,
     log_every_shuffles: int,
     write_every_shuffles: int,
+    similarity_output_dir: str | None,
     row_callback: Callable[[list[dict]], None] | None = None,
 ):
     rows = []
@@ -498,6 +547,19 @@ def _analysis_rows_for_similarity(
     member_ids = build_member_ids(num_members, width)
     across_real = extract_across_values(similarity_matrix, member_ids)
     within_real = extract_within_values(similarity_matrix, member_ids)
+    if similarity_output_dir:
+        out_path = _save_similarity_distributions(
+            similarity_output_dir=similarity_output_dir,
+            width=int(metric_payload['width']),
+            images_seen=int(metric_payload['images_seen']),
+            representation=representation,
+            within_real=within_real,
+            across_real=across_real,
+        )
+        print(
+            f"  saved similarities width={metric_payload['width']} step={metric_payload['images_seen']} "
+            f"rep={representation} -> {out_path}"
+        )
 
     # Analysis B observed: within_real vs across_real
     diag_stats = ks_w1_stats(within_real, across_real)
@@ -729,6 +791,13 @@ def main() -> None:
     out_dir = os.path.dirname(args.output_csv)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
+    similarity_output_dir = (
+        args.similarity_output_dir.strip()
+        if args.similarity_output_dir and args.similarity_output_dir.strip()
+        else _default_similarity_output_dir(args.output_csv)
+    )
+    os.makedirs(similarity_output_dir, exist_ok=True)
+    print(f'Saving compressed similarity distributions under: {similarity_output_dir}')
 
     fieldnames = [
         'width',
@@ -794,6 +863,12 @@ def main() -> None:
                 weights_rep_key = (width, step, 'weights')
                 if weights_rep_key in completed_reps:
                     print(f'Skipping width={width} step={step} rep=weights (already complete in CSV)')
+                    weights_npz = _similarity_npz_path(similarity_output_dir, width, step, 'weights')
+                    if not os.path.exists(weights_npz):
+                        print(
+                            f'  Missing saved similarity data: {weights_npz} '
+                            f'(rerun with --no-resume to backfill).'
+                        )
                 else:
                     missing_artifacts = _missing_weight_artifacts(group_dirs, step)
                     if missing_artifacts:
@@ -821,6 +896,7 @@ def main() -> None:
                             representation='weights',
                             log_every_shuffles=args.log_every_shuffles,
                             write_every_shuffles=args.write_every_shuffles,
+                            similarity_output_dir=similarity_output_dir,
                             row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
                         )
                         rows_written += len(weight_rows)
@@ -836,6 +912,12 @@ def main() -> None:
                 activations_rep_key = (width, step, 'activations')
                 if activations_rep_key in completed_reps:
                     print(f'Skipping width={width} step={step} rep=activations (already complete in CSV)')
+                    activations_npz = _similarity_npz_path(similarity_output_dir, width, step, 'activations')
+                    if not os.path.exists(activations_npz):
+                        print(
+                            f'  Missing saved similarity data: {activations_npz} '
+                            f'(rerun with --no-resume to backfill).'
+                        )
                 else:
                     t1 = time.time()
                     print(f'Starting width={width} step={step} rep=activations')
@@ -857,6 +939,7 @@ def main() -> None:
                         representation='activations',
                         log_every_shuffles=args.log_every_shuffles,
                         write_every_shuffles=args.write_every_shuffles,
+                        similarity_output_dir=similarity_output_dir,
                         row_callback=lambda rows: (writer.writerows(rows), f_out.flush()),
                     )
                     rows_written += len(activation_rows)
