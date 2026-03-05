@@ -26,7 +26,11 @@ def _prepare(df: pd.DataFrame) -> pd.DataFrame:
         'ks_distance',
         'ks_p_raw',
         'ks_sigma_two_sided',
+        'ks_p_empirical',
+        'ks_sigma_empirical_two_sided',
         'w1_distance',
+        'w1_p_empirical',
+        'w1_sigma_empirical_two_sided',
         'train_loss',
         'val_loss',
         'train_error',
@@ -115,6 +119,56 @@ def _plot_train_val(
     return figures
 
 
+def _plot_within_observed_pvalues(
+    metrics_df: pd.DataFrame,
+    out_dir: str,
+    close: bool = True,
+):
+    subset = metrics_df[
+        (metrics_df['analysis_type'] == 'within_vs_across_real')
+        & (metrics_df['shuffle_id'] == -1)
+    ].copy()
+    if subset.empty:
+        return []
+
+    metric_specs = [
+        ('ks_p_raw', 'KS Raw P-Value vs Images Seen', 'ks_p_raw_vs_images_seen.pdf'),
+        ('ks_p_empirical', 'KS Empirical P-Value vs Images Seen', 'ks_p_empirical_vs_images_seen.pdf'),
+        ('w1_p_empirical', 'W1 Empirical P-Value vs Images Seen', 'w1_p_empirical_vs_images_seen.pdf'),
+    ]
+
+    figures = []
+    for metric, title, filename in metric_specs:
+        if metric not in subset.columns:
+            continue
+        plot_df = subset[np.isfinite(subset[metric])].copy()
+        if plot_df.empty:
+            continue
+
+        fig = plt.figure(figsize=(10, 6))
+        for (representation, width), sub in plot_df.groupby(['representation', 'width']):
+            sub = sub.sort_values('images_seen')
+            label = f'{representation} N={int(width)}'
+            plt.plot(sub['images_seen'], sub[metric], marker='o', label=label)
+
+        plt.xscale('log')
+        positive_vals = plot_df[metric][plot_df[metric] > 0]
+        if not positive_vals.empty:
+            plt.yscale('log')
+        plt.xlabel('Images seen (P)')
+        plt.ylabel(metric.replace('_', ' ').title())
+        plt.title(title)
+        plt.grid(True, alpha=0.25)
+        plt.legend(fontsize=8, ncol=2)
+        plt.tight_layout()
+        fig.savefig(os.path.join(out_dir, filename), bbox_inches='tight')
+        figures.append(fig)
+        if close:
+            plt.close(fig)
+
+    return figures
+
+
 
 def main() -> None:
     args = parse_args()
@@ -143,6 +197,7 @@ def main() -> None:
     )
 
     _plot_train_val(df, args.output_dir)
+    _plot_within_observed_pvalues(df, args.output_dir)
 
     print(f'Wrote plots to {args.output_dir}')
 
