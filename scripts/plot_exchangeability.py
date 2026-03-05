@@ -54,8 +54,16 @@ def _aggregate_for_curves(df: pd.DataFrame) -> pd.DataFrame:
 
 
 
-def _plot_metric(curves: pd.DataFrame, metric: str, lo: str, hi: str, out_path: str, title: str) -> None:
-    plt.figure(figsize=(10, 6))
+def _plot_metric(
+    curves: pd.DataFrame,
+    metric: str,
+    lo: str,
+    hi: str,
+    out_path: str,
+    title: str,
+    close: bool = True,
+):
+    fig = plt.figure(figsize=(10, 6))
     for (representation, analysis_type), sub in curves.groupby(['representation', 'analysis_type']):
         for width, wsub in sub.groupby('width'):
             wsub = wsub.sort_values('images_seen')
@@ -70,20 +78,27 @@ def _plot_metric(curves: pd.DataFrame, metric: str, lo: str, hi: str, out_path: 
     plt.grid(True, alpha=0.25)
     plt.legend(fontsize=8, ncol=2)
     plt.tight_layout()
-    plt.savefig(out_path)
-    plt.close()
+    fig.savefig(out_path, bbox_inches='tight')
+    if close:
+        plt.close(fig)
+    return fig
 
 
 
-def _plot_train_val(metrics_df: pd.DataFrame, out_dir: str) -> None:
+def _plot_train_val(
+    metrics_df: pd.DataFrame,
+    out_dir: str,
+    close: bool = True,
+):
     dedup = (
         metrics_df[['width', 'images_seen', 'train_loss', 'val_loss', 'train_error', 'val_error']]
         .drop_duplicates()
         .sort_values(['width', 'images_seen'])
     )
 
+    figures = []
     for metric in ['train_loss', 'val_loss', 'train_error', 'val_error']:
-        plt.figure(figsize=(8, 5))
+        fig = plt.figure(figsize=(8, 5))
         for width, sub in dedup.groupby('width'):
             plt.plot(sub['images_seen'], sub[metric], marker='o', label=f'N={int(width)}')
         plt.xscale('log')
@@ -93,8 +108,11 @@ def _plot_train_val(metrics_df: pd.DataFrame, out_dir: str) -> None:
         plt.grid(True, alpha=0.25)
         plt.legend()
         plt.tight_layout()
-        plt.savefig(os.path.join(out_dir, f'{metric}_vs_images_seen.png'))
-        plt.close()
+        fig.savefig(os.path.join(out_dir, f'{metric}_vs_images_seen.pdf'), bbox_inches='tight')
+        figures.append(fig)
+        if close:
+            plt.close(fig)
+    return figures
 
 
 
@@ -112,7 +130,7 @@ def main() -> None:
         metric='ks_distance',
         lo='ks_distance_p10',
         hi='ks_distance_p90',
-        out_path=os.path.join(args.output_dir, 'ks_distance_vs_images_seen.png'),
+        out_path=os.path.join(args.output_dir, 'ks_distance_vs_images_seen.pdf'),
         title='KS Distance vs Images Seen',
     )
     _plot_metric(
@@ -120,7 +138,7 @@ def main() -> None:
         metric='w1_distance',
         lo='w1_distance_p10',
         hi='w1_distance_p90',
-        out_path=os.path.join(args.output_dir, 'w1_distance_vs_images_seen.png'),
+        out_path=os.path.join(args.output_dir, 'w1_distance_vs_images_seen.pdf'),
         title='W1 Distance vs Images Seen',
     )
 
