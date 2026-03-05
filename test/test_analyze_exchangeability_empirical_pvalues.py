@@ -116,7 +116,7 @@ def test_resume_backfill_populates_new_columns_without_recompute(tmp_path):
         resume=True,
     )
 
-    assert completed_reps == {(32, 100000, 'weights')}
+    assert completed_reps == {(32, '', 100000, 'weights')}
     assert rows_written == 5
     assert file_mode == 'a'
 
@@ -136,3 +136,61 @@ def test_existing_asymptotic_columns_unchanged():
     observed = rows[0]
     assert observed['ks_p_raw'] == 0.123
     assert observed['ks_sigma_two_sided'] == 1.98
+
+
+def test_resume_recomputes_when_source_job_changes(tmp_path):
+    csv_path = tmp_path / 'source_bound.csv'
+    rows = [
+        _base_row(
+            source_run_id='exchangeability_job_old',
+            analysis_type='within_vs_across_real',
+            shuffle_id=-1,
+            ks_distance=0.55,
+            w1_distance=0.45,
+        ),
+        _base_row(
+            source_run_id='exchangeability_job_old',
+            analysis_type='across_real_vs_across_shuffled',
+            shuffle_id=0,
+            ks_distance=0.2,
+            w1_distance=0.2,
+        ),
+        _base_row(
+            source_run_id='exchangeability_job_old',
+            analysis_type='within_shuffled_vs_across_real',
+            shuffle_id=0,
+            ks_distance=0.3,
+            w1_distance=0.25,
+        ),
+        _base_row(
+            source_run_id='exchangeability_job_old',
+            analysis_type='across_real_vs_across_shuffled',
+            shuffle_id=1,
+            ks_distance=0.1,
+            w1_distance=0.1,
+        ),
+        _base_row(
+            source_run_id='exchangeability_job_old',
+            analysis_type='within_shuffled_vs_across_real',
+            shuffle_id=1,
+            ks_distance=0.8,
+            w1_distance=0.7,
+        ),
+    ]
+    with open(csv_path, 'w', newline='', encoding='utf-8') as f:
+        writer = csv.DictWriter(f, fieldnames=ANALYSIS_FIELDNAMES)
+        writer.writeheader()
+        writer.writerows(rows)
+
+    completed_reps, rows_written, file_mode = _prepare_resume_state(
+        output_csv=str(csv_path),
+        fieldnames=ANALYSIS_FIELDNAMES,
+        shuffle_repeats=2,
+        resume=True,
+        width_sources={32: 'exchangeability_job_new'},
+    )
+
+    assert completed_reps == set()
+    assert rows_written == 0
+    assert file_mode == 'w'
+    assert _read_csv_rows(csv_path) == []

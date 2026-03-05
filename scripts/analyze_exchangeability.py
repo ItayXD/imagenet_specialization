@@ -48,6 +48,7 @@ EMPIRICAL_FIELDNAMES = [
 
 ANALYSIS_FIELDNAMES = [
     'width',
+    'source_run_id',
     'images_seen',
     'representation',
     'analysis_type',
@@ -923,9 +924,10 @@ def write_rows(rows: list[dict], output_csv: str) -> None:
 
 
 
-def _row_identity(row: dict) -> tuple[int, int, str, str, int]:
+def _row_identity(row: dict) -> tuple[int, str, int, str, str, int]:
     return (
         int(row['width']),
+        str(row.get('source_run_id', '')),
         int(row['images_seen']),
         str(row['representation']),
         str(row['analysis_type']),
@@ -933,9 +935,10 @@ def _row_identity(row: dict) -> tuple[int, int, str, str, int]:
     )
 
 
-def _rep_identity(row: dict) -> tuple[int, int, str]:
+def _rep_identity(row: dict) -> tuple[int, str, int, str]:
     return (
         int(row['width']),
+        str(row.get('source_run_id', '')),
         int(row['images_seen']),
         str(row['representation']),
     )
@@ -1040,7 +1043,8 @@ def _prepare_resume_state(
     fieldnames: list[str],
     shuffle_repeats: int,
     resume: bool,
-) -> tuple[set[tuple[int, int, str]], int, str]:
+    width_sources: dict[int, str] | None = None,
+) -> tuple[set[tuple[int, str, int, str]], int, str]:
     if (not resume) or (not os.path.exists(output_csv)):
         return set(), 0, 'w'
 
@@ -1049,8 +1053,38 @@ def _prepare_resume_state(
     if not rows:
         return set(), 0, 'w'
 
+    if width_sources:
+        filtered_rows = []
+        dropped_source_rows = 0
+        for row in rows:
+            width = _coerce_int_or_none(row.get('width'))
+            if width is None:
+                filtered_rows.append(row)
+                continue
+            expected_source = width_sources.get(width)
+            if expected_source is None:
+                filtered_rows.append(row)
+                continue
+            row_source = str(row.get('source_run_id', ''))
+            if row_source == expected_source:
+                filtered_rows.append(row)
+            else:
+                dropped_source_rows += 1
+        if dropped_source_rows > 0:
+            rows = filtered_rows
+            with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.DictWriter(f, fieldnames=fieldnames)
+                writer.writeheader()
+                writer.writerows(rows)
+            print(
+                f'Resume: dropped {dropped_source_rows} rows from stale source jobs '
+                f'for widths being analyzed.'
+            )
+        if not rows:
+            return set(), 0, 'w'
+
     dedup_rows = []
-    seen_keys: set[tuple[int, int, str, str, int]] = set()
+    seen_keys: set[tuple[int, str, int, str, str, int]] = set()
     for row in rows:
         key = _row_identity(row)
         if key in seen_keys:
@@ -1067,7 +1101,7 @@ def _prepare_resume_state(
         rows = dedup_rows
 
     expected_rep_rows = 1 + 2 * shuffle_repeats
-    rep_counts: dict[tuple[int, int, str], int] = defaultdict(int)
+    rep_counts: dict[tuple[int, str, int, str], int] = defaultdict(int)
     for row in rows:
         rep_counts[_rep_identity(row)] += 1
 
@@ -1106,7 +1140,7 @@ def _prepare_resume_state(
 def main() -> None:
     args = parse_args()
 
-    width_dirs, _ = _resolve_width_dirs(
+    width_dirs, width_sources = _resolve_width_dirs(
         base_save_dir=args.base_save_dir,
         run_id=args.run_id,
         resolution_mode=args.run_id_resolution,
@@ -1140,6 +1174,7 @@ def main() -> None:
         fieldnames=fieldnames,
         shuffle_repeats=args.shuffle_repeats,
         resume=args.resume,
+        width_sources=width_sources,
     )
 
     with open(args.output_csv, file_mode, newline='', encoding='utf-8') as f_out:
@@ -1155,6 +1190,7 @@ def main() -> None:
             leave=True,
         )
         for width, width_dir in width_iter:
+            source_run_id = width_sources.get(width, '')
             group_dirs = _list_group_dirs(width_dir)
             if not group_dirs:
                 continue
@@ -1170,6 +1206,7 @@ def main() -> None:
             for step in step_iter:
                 metric_payload = {
                     'width': width,
+                    'source_run_id': source_run_id,
                     'images_seen': step,
                     'train_loss': metrics_by_step.get(step, {}).get('train_loss', np.nan),
                     'train_error': metrics_by_step.get(step, {}).get('train_error', np.nan),
@@ -1180,7 +1217,7 @@ def main() -> None:
                 rows_step = 0
 
                 # weights
-                weights_rep_key = (width, step, 'weights')
+                weights_rep_key = (width, source_run_id, step, 'weights')
                 if weights_rep_key in completed_reps:
                     print(f'Skipping width={width} step={step} rep=weights (already complete in CSV)')
                     weights_npz = _similarity_npz_path(similarity_output_dir, width, step, 'weights')
@@ -1231,7 +1268,7 @@ def main() -> None:
                         )
 
                 # activations
-                activations_rep_key = (width, step, 'activations')
+                activations_rep_key = (width, source_run_id, step, 'activations')
                 if activations_rep_key in completed_reps:
                     print(f'Skipping width={width} step={step} rep=activations (already complete in CSV)')
                     activations_npz = _similarity_npz_path(similarity_output_dir, width, step, 'activations')
