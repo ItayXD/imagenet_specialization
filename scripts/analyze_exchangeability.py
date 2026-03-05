@@ -37,6 +37,33 @@ from src.run.constants import IMAGENET_FOLDER
 
 STATE_PATTERN = re.compile(r'^state_(\d+)')
 
+EMPIRICAL_FIELDNAMES = [
+    'ks_p_empirical',
+    'ks_sigma_empirical_two_sided',
+    'w1_p_empirical',
+    'w1_sigma_empirical_two_sided',
+]
+
+ANALYSIS_FIELDNAMES = [
+    'width',
+    'images_seen',
+    'representation',
+    'analysis_type',
+    'shuffle_id',
+    'ks_distance',
+    'ks_p_raw',
+    'ks_sigma_two_sided',
+    'ks_p_empirical',
+    'ks_sigma_empirical_two_sided',
+    'w1_distance',
+    'w1_p_empirical',
+    'w1_sigma_empirical_two_sided',
+    'train_loss',
+    'val_loss',
+    'train_error',
+    'val_error',
+]
+
 
 def _is_notebook_session() -> bool:
     try:
@@ -573,11 +600,10 @@ def _analysis_rows_for_similarity(
         'ks_sigma_two_sided': two_sided_sigma_from_p(diag_stats['ks_pvalue']),
         'w1_distance': diag_stats['w1_distance'],
     }
+    _set_empirical_fields(diag_row, np.nan, np.nan)
     rows.append(diag_row)
-    pending_rows.append(diag_row)
-    if row_callback is not None and write_every_shuffles <= 0:
-        row_callback(pending_rows)
-        pending_rows = []
+    diag_shuffle_ks_null = []
+    diag_shuffle_w1_null = []
 
     shuffle_iter = _progress(
         range(shuffle_repeats),
@@ -599,6 +625,7 @@ def _analysis_rows_for_similarity(
             'ks_sigma_two_sided': two_sided_sigma_from_p(baseline_stats['ks_pvalue']),
             'w1_distance': baseline_stats['w1_distance'],
         }
+        _set_empirical_fields(baseline_row, np.nan, np.nan)
         rows.append(baseline_row)
         pending_rows.append(baseline_row)
 
@@ -613,8 +640,11 @@ def _analysis_rows_for_similarity(
             'ks_sigma_two_sided': two_sided_sigma_from_p(diag_shuffle_stats['ks_pvalue']),
             'w1_distance': diag_shuffle_stats['w1_distance'],
         }
+        _set_empirical_fields(diag_shuffle_row, np.nan, np.nan)
         rows.append(diag_shuffle_row)
         pending_rows.append(diag_shuffle_row)
+        diag_shuffle_ks_null.append(float(diag_shuffle_stats['ks_distance']))
+        diag_shuffle_w1_null.append(float(diag_shuffle_stats['w1_distance']))
 
         if (
             log_every_shuffles > 0
@@ -632,6 +662,17 @@ def _analysis_rows_for_similarity(
         ):
             row_callback(pending_rows)
             pending_rows = []
+
+    ks_empirical = _empirical_upper_tail_p(
+        observed=float(diag_row['ks_distance']),
+        null_values=np.asarray(diag_shuffle_ks_null, dtype=np.float64),
+    )
+    w1_empirical = _empirical_upper_tail_p(
+        observed=float(diag_row['w1_distance']),
+        null_values=np.asarray(diag_shuffle_w1_null, dtype=np.float64),
+    )
+    _set_empirical_fields(diag_row, ks_empirical, w1_empirical)
+    pending_rows.append(diag_row)
 
     if row_callback is not None and pending_rows:
         row_callback(pending_rows)
@@ -669,23 +710,8 @@ def write_rows(rows: list[dict], output_csv: str) -> None:
     out_dir = os.path.dirname(output_csv)
     if out_dir:
         os.makedirs(out_dir, exist_ok=True)
-    fieldnames = [
-        'width',
-        'images_seen',
-        'representation',
-        'analysis_type',
-        'shuffle_id',
-        'ks_distance',
-        'ks_p_raw',
-        'ks_sigma_two_sided',
-        'w1_distance',
-        'train_loss',
-        'val_loss',
-        'train_error',
-        'val_error',
-    ]
     with open(output_csv, 'w', newline='', encoding='utf-8') as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer = csv.DictWriter(f, fieldnames=ANALYSIS_FIELDNAMES)
         writer.writeheader()
         for row in rows:
             writer.writerow(row)
@@ -708,6 +734,100 @@ def _rep_identity(row: dict) -> tuple[int, int, str]:
         int(row['images_seen']),
         str(row['representation']),
     )
+
+
+def _coerce_float_or_nan(value) -> float:
+    try:
+        return float(value)
+    except Exception:
+        return float('nan')
+
+
+def _coerce_int_or_none(value) -> int | None:
+    try:
+        return int(value)
+    except Exception:
+        return None
+
+
+def _update_numeric_row_field(row: dict, key: str, value: float) -> bool:
+    current = _coerce_float_or_nan(row.get(key))
+    if np.isnan(value):
+        needs_update = (key not in row) or (not np.isnan(current))
+    else:
+        needs_update = (key not in row) or (not np.isfinite(current)) or (current != value)
+    row[key] = value
+    return needs_update
+
+
+def _set_empirical_fields(row: dict, ks_p_empirical: float, w1_p_empirical: float) -> bool:
+    ks_sigma_empirical = (
+        two_sided_sigma_from_p(ks_p_empirical) if np.isfinite(ks_p_empirical) else float('nan')
+    )
+    w1_sigma_empirical = (
+        two_sided_sigma_from_p(w1_p_empirical) if np.isfinite(w1_p_empirical) else float('nan')
+    )
+    changed = False
+    changed = _update_numeric_row_field(row, 'ks_p_empirical', ks_p_empirical) or changed
+    changed = _update_numeric_row_field(row, 'ks_sigma_empirical_two_sided', ks_sigma_empirical) or changed
+    changed = _update_numeric_row_field(row, 'w1_p_empirical', w1_p_empirical) or changed
+    changed = _update_numeric_row_field(row, 'w1_sigma_empirical_two_sided', w1_sigma_empirical) or changed
+    return changed
+
+
+def _empirical_upper_tail_p(observed: float, null_values: np.ndarray) -> float:
+    if not np.isfinite(observed):
+        return float('nan')
+    null_arr = np.asarray(null_values, dtype=np.float64).reshape(-1)
+    null_arr = null_arr[np.isfinite(null_arr)]
+    if null_arr.size == 0:
+        return float('nan')
+    extreme = int(np.count_nonzero(null_arr >= observed))
+    return float((1 + extreme) / (null_arr.size + 1))
+
+
+def _annotate_within_observed_empirical_p(rows: list[dict]) -> bool:
+    changed = False
+    by_rep: dict[tuple[int, int, str], list[dict]] = defaultdict(list)
+    for row in rows:
+        by_rep[_rep_identity(row)].append(row)
+
+    for rep_rows in by_rep.values():
+        observed_row = None
+        ks_null = []
+        w1_null = []
+
+        for row in rep_rows:
+            analysis_type = str(row.get('analysis_type', ''))
+            shuffle_id = _coerce_int_or_none(row.get('shuffle_id'))
+            if analysis_type == 'within_vs_across_real' and shuffle_id == -1:
+                observed_row = row
+            elif analysis_type == 'within_shuffled_vs_across_real' and shuffle_id is not None and shuffle_id >= 0:
+                ks_null.append(_coerce_float_or_nan(row.get('ks_distance')))
+                w1_null.append(_coerce_float_or_nan(row.get('w1_distance')))
+
+        ks_empirical = float('nan')
+        w1_empirical = float('nan')
+        if observed_row is not None:
+            ks_empirical = _empirical_upper_tail_p(
+                observed=_coerce_float_or_nan(observed_row.get('ks_distance')),
+                null_values=np.asarray(ks_null, dtype=np.float64),
+            )
+            w1_empirical = _empirical_upper_tail_p(
+                observed=_coerce_float_or_nan(observed_row.get('w1_distance')),
+                null_values=np.asarray(w1_null, dtype=np.float64),
+            )
+
+        for row in rep_rows:
+            analysis_type = str(row.get('analysis_type', ''))
+            shuffle_id = _coerce_int_or_none(row.get('shuffle_id'))
+            is_observed = analysis_type == 'within_vs_across_real' and shuffle_id == -1
+            if is_observed:
+                changed = _set_empirical_fields(row, ks_empirical, w1_empirical) or changed
+            else:
+                changed = _set_empirical_fields(row, float('nan'), float('nan')) or changed
+
+    return changed
 
 
 def _prepare_resume_state(
@@ -762,6 +882,13 @@ def _prepare_resume_state(
         for row in rows:
             rep_counts[_rep_identity(row)] += 1
 
+    if _annotate_within_observed_empirical_p(rows):
+        with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        print('Resume: backfilled empirical p-value columns from existing shuffle rows.')
+
     completed_reps = {k for k, c in rep_counts.items() if c >= expected_rep_rows}
     if rows:
         print(
@@ -799,21 +926,7 @@ def main() -> None:
     os.makedirs(similarity_output_dir, exist_ok=True)
     print(f'Saving compressed similarity distributions under: {similarity_output_dir}')
 
-    fieldnames = [
-        'width',
-        'images_seen',
-        'representation',
-        'analysis_type',
-        'shuffle_id',
-        'ks_distance',
-        'ks_p_raw',
-        'ks_sigma_two_sided',
-        'w1_distance',
-        'train_loss',
-        'val_loss',
-        'train_error',
-        'val_error',
-    ]
+    fieldnames = ANALYSIS_FIELDNAMES
 
     completed_reps, rows_written, file_mode = _prepare_resume_state(
         output_csv=args.output_csv,
