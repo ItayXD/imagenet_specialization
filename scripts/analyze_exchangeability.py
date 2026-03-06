@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 import argparse
+import contextvars
 import csv
 import json
 import os
 import re
 import sys
+import threading
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -696,14 +698,44 @@ def _collect_member_states(group_dirs: list[str], step: int, progress_label: str
     )
     for group_dir in group_iter:
         state_dir = join(group_dir, 'state_ckpts')
-        state_obj = checkpoints.restore_checkpoint(
-            ckpt_dir=state_dir,
-            target=None,
-            step=step,
-            prefix='state_',
-        )
+        state_obj = _restore_state_checkpoint(state_dir, step)
         members.extend(_member_variables_from_state(state_obj))
     return members
+
+
+
+def _restore_state_checkpoint(state_dir: str, step: int):
+    restore_kwargs = {
+        'ckpt_dir': state_dir,
+        'target': None,
+        'step': step,
+        'prefix': 'state_',
+    }
+
+    if not _is_notebook_session():
+        return checkpoints.restore_checkpoint(**restore_kwargs)
+
+    # Orbax restore can conflict with ipykernel's asyncio context handling.
+    # Run restore on a separate thread with a fresh context in notebook sessions.
+    result_holder = {}
+    error_holder = {}
+
+    def _restore_on_thread():
+        try:
+            fresh_context = contextvars.Context()
+            result_holder['value'] = fresh_context.run(
+                lambda: checkpoints.restore_checkpoint(**restore_kwargs)
+            )
+        except Exception as exc:
+            error_holder['error'] = exc
+
+    thread = threading.Thread(target=_restore_on_thread, name='checkpoint-restore')
+    thread.start()
+    thread.join()
+
+    if 'error' in error_holder:
+        raise error_holder['error']
+    return result_holder['value']
 
 
 
