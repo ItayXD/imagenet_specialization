@@ -139,6 +139,15 @@ def parse_args() -> argparse.Namespace:
         default=128,
         help='Probe dataloader batch size used for streaming accumulation',
     )
+    parser.add_argument(
+        '--activation-chunk-size',
+        type=int,
+        default=0,
+        help=(
+            'Max probe images processed per member forward pass inside activation similarity. '
+            'Set 0 to start at probe-loader batch size and back off automatically on OOM.'
+        ),
+    )
     parser.add_argument('--probe-seed', type=int, default=1234, help='Seed for probe subset selection')
     parser.add_argument('--widths', type=int, nargs='*', default=None, help='Optional list of widths to analyze')
     parser.add_argument('--resume', dest='resume', action='store_true', default=True, help='Resume from existing output CSV when possible')
@@ -569,11 +578,14 @@ def _activation_similarity_matrix(
     member_variables: list[dict],
     width: int,
     probe_loader,
+    activation_chunk_size: int = 0,
     progress_label: str = '',
 ) -> np.ndarray:
     num_members = len(member_variables)
     if num_members == 0:
         raise ValueError('No member variables found for activation analysis.')
+    if activation_chunk_size < 0:
+        raise ValueError('activation_chunk_size must be non-negative.')
 
     leaf = jax.tree_util.tree_leaves(member_variables[0]['params'])[0]
     param_dtype = jnp.asarray(leaf).dtype
@@ -590,31 +602,60 @@ def _activation_similarity_matrix(
         desc=f'{progress_label} probe-batches',
         leave=False,
     )
+    adaptive_chunk_size = activation_chunk_size if activation_chunk_size > 0 else None
     for batch in batch_iter:
         batch_x, _ = batch
-        x = jnp.asarray(batch_x)
+        batch_size = int(batch_x.shape[0])
+        chunk_size = batch_size if adaptive_chunk_size is None else min(adaptive_chunk_size, batch_size)
+        chunk_start = 0
+        while chunk_start < batch_size:
+            chunk_end = min(chunk_start + chunk_size, batch_size)
+            x = jnp.asarray(batch_x[chunk_start:chunk_end])
 
-        member_features = []
-        member_iter = _progress(
-            member_variables,
-            desc=f'{progress_label} members',
-            total=num_members,
-            leave=False,
-        )
-        for vars_ in member_iter:
-            conv_out = _extract_conv_init_output(model, vars_, x)
-            feat = jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, width))
-            member_features.append(feat)
+            try:
+                member_features = []
+                member_iter = _progress(
+                    member_variables,
+                    desc=f'{progress_label} members',
+                    total=num_members,
+                    leave=False,
+                )
+                for vars_ in member_iter:
+                    conv_out = _extract_conv_init_output(model, vars_, x)
+                    feat = jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, width))
+                    member_features.append(feat)
 
-        for e in range(num_members):
-            fe = member_features[e]
-            self_grams[e] += fe.T @ fe
+                for e in range(num_members):
+                    fe = member_features[e]
+                    self_grams[e] += fe.T @ fe
 
-        for e in range(num_members):
-            fe = member_features[e]
-            for f in range(e + 1, num_members):
-                ff = member_features[f]
-                cross_grams[(e, f)] += fe.T @ ff
+                for e in range(num_members):
+                    fe = member_features[e]
+                    for f in range(e + 1, num_members):
+                        ff = member_features[f]
+                        cross_grams[(e, f)] += fe.T @ ff
+            except ValueError as exc:
+                message = str(exc)
+                is_oom = ('RESOURCE_EXHAUSTED' in message) or ('Out of memory' in message)
+                if is_oom and chunk_size > 1:
+                    new_chunk_size = max(1, chunk_size // 2)
+                    if new_chunk_size == chunk_size:
+                        new_chunk_size = chunk_size - 1
+                    adaptive_chunk_size = new_chunk_size
+                    chunk_size = new_chunk_size
+                    print(
+                        f'{progress_label} activation OOM at chunk size {chunk_end - chunk_start}; '
+                        f'retrying with chunk size {chunk_size}'
+                    )
+                    continue
+                if is_oom:
+                    raise ValueError(
+                        'Activation extraction ran out of memory even at chunk size 1. '
+                        'Reduce --probe-loader-batch-size or use a smaller model width.'
+                    ) from exc
+                raise
+
+            chunk_start = chunk_end
 
     self_grams_np = [np.asarray(g, dtype=np.float64) for g in self_grams]
     cross_grams_np = {k: np.asarray(v, dtype=np.float64) for k, v in cross_grams.items()}
@@ -1286,6 +1327,7 @@ def main() -> None:
                         member_states,
                         width,
                         probe_loader,
+                        activation_chunk_size=args.activation_chunk_size,
                         progress_label=f'w{width} p{step}',
                     )
                     activation_rows = _analysis_rows_for_similarity(
