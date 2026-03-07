@@ -31,6 +31,7 @@ from src.experiment.exchangeability_utils import (
     extract_across_values,
     extract_within_values,
     ks_w1_stats,
+    ks_w1_stats_against_sorted_reference,
     shuffled_similarity_values_batched,
     shuffled_similarity_values,
     two_sided_sigma_from_p,
@@ -120,7 +121,7 @@ def parse_args() -> argparse.Namespace:
         '--shuffle-stats-workers',
         type=int,
         default=8,
-        help='Thread workers for per-shuffle KS/W1 stats within each batch',
+        help='Thread workers for per-shuffle KS/W1 stats within each batch (<=0 uses auto)',
     )
     parser.add_argument(
         '--log-every-shuffles',
@@ -156,6 +157,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--no-resume', dest='resume', action='store_false', help='Ignore existing output CSV and recompute everything')
     return parser.parse_args()
 
+
+def _resolve_shuffle_stats_workers(requested_workers: int) -> int:
+    if requested_workers > 0:
+        return requested_workers
+    cpu_count = os.cpu_count() or 1
+    return max(1, cpu_count - 1)
 
 
 def _get_nested_item(obj, key):
@@ -804,6 +811,7 @@ def _analysis_rows_for_similarity(
     member_ids = build_member_ids(num_members, width)
     across_real = extract_across_values(similarity_matrix, member_ids)
     within_real = extract_within_values(similarity_matrix, member_ids)
+    across_real_sorted = np.sort(across_real)
     if similarity_output_dir:
         out_path = _save_similarity_distributions(
             similarity_output_dir=similarity_output_dir,
@@ -852,8 +860,8 @@ def _analysis_rows_for_similarity(
         across_shuf_local = batch_across[offset]
         within_shuf_local = batch_within[offset]
         return (
-            ks_w1_stats(across_real, across_shuf_local),
-            ks_w1_stats(within_shuf_local, across_real),
+            ks_w1_stats_against_sorted_reference(across_real_sorted, across_shuf_local),
+            ks_w1_stats_against_sorted_reference(across_real_sorted, within_shuf_local),
         )
 
     stats_executor = (
@@ -1212,6 +1220,7 @@ def _prepare_resume_state(
 
 def main() -> None:
     args = parse_args()
+    shuffle_stats_workers = _resolve_shuffle_stats_workers(args.shuffle_stats_workers)
 
     width_dirs, width_sources = _resolve_width_dirs(
         base_save_dir=args.base_save_dir,
@@ -1239,6 +1248,7 @@ def main() -> None:
     )
     os.makedirs(similarity_output_dir, exist_ok=True)
     print(f'Saving compressed similarity distributions under: {similarity_output_dir}')
+    print(f'Using shuffle_stats_workers={shuffle_stats_workers}')
 
     fieldnames = ANALYSIS_FIELDNAMES
 
@@ -1322,7 +1332,7 @@ def main() -> None:
                             width=width,
                             shuffle_repeats=args.shuffle_repeats,
                             shuffle_batch_size=args.shuffle_batch_size,
-                            shuffle_stats_workers=args.shuffle_stats_workers,
+                            shuffle_stats_workers=shuffle_stats_workers,
                             rng=rng,
                             metric_payload=metric_payload,
                             representation='weights',
@@ -1368,7 +1378,7 @@ def main() -> None:
                         width=width,
                         shuffle_repeats=args.shuffle_repeats,
                         shuffle_batch_size=args.shuffle_batch_size,
-                        shuffle_stats_workers=args.shuffle_stats_workers,
+                        shuffle_stats_workers=shuffle_stats_workers,
                         rng=rng,
                         metric_payload=metric_payload,
                         representation='activations',

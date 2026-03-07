@@ -3,11 +3,14 @@ from __future__ import annotations
 import numpy as np
 
 try:
-    from scipy.stats import ks_2samp, norm, wasserstein_distance
+    from scipy.stats import distributions, ks_2samp, norm
 except Exception:  # pragma: no cover
+    distributions = None
     ks_2samp = None
     norm = None
-    wasserstein_distance = None
+
+
+AUTO_EXACT_MAX_N = 10000
 
 
 
@@ -119,13 +122,64 @@ def _ks_distance_numpy(x: np.ndarray, y: np.ndarray) -> float:
 
 
 
-def _w1_numpy(x: np.ndarray, y: np.ndarray) -> float:
-    x_sorted = np.sort(x)
-    y_sorted = np.sort(y)
-    q = np.linspace(0.0, 1.0, min(x_sorted.size, y_sorted.size), endpoint=False)
-    xq = np.quantile(x_sorted, q, method='linear')
-    yq = np.quantile(y_sorted, q, method='linear')
-    return float(np.mean(np.abs(xq - yq)))
+def _ks_w1_from_sorted(x_sorted: np.ndarray, y_sorted: np.ndarray) -> tuple[float, float]:
+    all_values = np.concatenate((x_sorted, y_sorted))
+    all_values.sort(kind='mergesort')
+
+    cdf_x = np.searchsorted(x_sorted, all_values, side='right') / x_sorted.size
+    cdf_y = np.searchsorted(y_sorted, all_values, side='right') / y_sorted.size
+    cdf_diff = cdf_x - cdf_y
+
+    ks_distance = float(np.max(np.abs(cdf_diff)))
+
+    deltas = np.diff(all_values)
+    if deltas.size == 0:
+        w1_distance = 0.0
+    else:
+        w1_distance = float(np.dot(np.abs(cdf_diff[:-1]), deltas))
+
+    return ks_distance, w1_distance
+
+
+def _ks_pvalue_from_distance(ks_distance: float, n1: int, n2: int) -> float:
+    if ks_2samp is None:
+        return float('nan')
+    if max(n1, n2) <= AUTO_EXACT_MAX_N:
+        return float('nan')
+    if distributions is None:
+        return float('nan')
+
+    m = float(max(n1, n2))
+    n = float(min(n1, n2))
+    effective_n = m * n / (m + n)
+    pvalue = float(distributions.kstwo.sf(ks_distance, np.round(effective_n)))
+    return float(np.clip(pvalue, 0.0, 1.0))
+
+
+def ks_w1_stats_from_sorted(x_sorted: np.ndarray, y_sorted: np.ndarray) -> dict[str, float]:
+    if x_sorted.size == 0 or y_sorted.size == 0:
+        raise ValueError('Both samples must be non-empty.')
+
+    ks_distance, w1_distance = _ks_w1_from_sorted(x_sorted, y_sorted)
+
+    if ks_2samp is not None and max(x_sorted.size, y_sorted.size) <= AUTO_EXACT_MAX_N:
+        ks_res = ks_2samp(x_sorted, y_sorted, alternative='two-sided', mode='auto')
+        ks_pvalue = float(ks_res.pvalue)
+    else:
+        ks_pvalue = _ks_pvalue_from_distance(ks_distance, int(x_sorted.size), int(y_sorted.size))
+
+    return {
+        'ks_distance': ks_distance,
+        'ks_pvalue': ks_pvalue,
+        'w1_distance': w1_distance,
+    }
+
+
+def ks_w1_stats_against_sorted_reference(reference_sorted: np.ndarray, sample: np.ndarray) -> dict[str, float]:
+    if reference_sorted.size == 0 or sample.size == 0:
+        raise ValueError('Both samples must be non-empty.')
+    sample_sorted = np.sort(sample)
+    return ks_w1_stats_from_sorted(reference_sorted, sample_sorted)
 
 
 
@@ -133,24 +187,9 @@ def ks_w1_stats(x: np.ndarray, y: np.ndarray) -> dict[str, float]:
     if x.size == 0 or y.size == 0:
         raise ValueError('Both samples must be non-empty.')
 
-    if ks_2samp is not None:
-        ks_res = ks_2samp(x, y, alternative='two-sided', mode='auto')
-        ks_distance = float(ks_res.statistic)
-        ks_pvalue = float(ks_res.pvalue)
-    else:  # pragma: no cover
-        ks_distance = _ks_distance_numpy(x, y)
-        ks_pvalue = float('nan')
-
-    if wasserstein_distance is not None:
-        w1 = float(wasserstein_distance(x, y))
-    else:  # pragma: no cover
-        w1 = _w1_numpy(x, y)
-
-    return {
-        'ks_distance': ks_distance,
-        'ks_pvalue': ks_pvalue,
-        'w1_distance': w1,
-    }
+    x_sorted = np.sort(x)
+    y_sorted = np.sort(y)
+    return ks_w1_stats_from_sorted(x_sorted, y_sorted)
 
 
 

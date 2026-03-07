@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 
 from src.experiment.exchangeability_utils import (
     abs_cosine_similarity_matrix,
@@ -7,6 +8,7 @@ from src.experiment.exchangeability_utils import (
     extract_within_values,
     flatten_permute_reshape_indices,
     ks_w1_stats,
+    ks_w1_stats_against_sorted_reference,
     make_target_points,
     shuffled_similarity_values,
     shuffled_similarity_values_batched,
@@ -94,3 +96,34 @@ def test_batched_shuffle_matches_scalar_sequence():
 
     assert np.allclose(batched_across, np.stack(scalar_across))
     assert np.allclose(batched_within, np.stack(scalar_within))
+
+
+def test_ks_w1_stats_matches_scipy_large_auto_asymp():
+    scipy_stats = pytest.importorskip('scipy.stats')
+    ks_2samp = scipy_stats.ks_2samp
+    wasserstein_distance = scipy_stats.wasserstein_distance
+
+    rng = np.random.default_rng(42)
+    x = rng.normal(size=12000)
+    y = rng.normal(loc=0.25, size=13000)
+
+    got = ks_w1_stats(x, y)
+    expected_ks = ks_2samp(x, y, alternative='two-sided', mode='auto')
+    expected_w1 = wasserstein_distance(x, y)
+
+    assert got['ks_distance'] == pytest.approx(float(expected_ks.statistic))
+    assert got['ks_pvalue'] == pytest.approx(float(expected_ks.pvalue))
+    assert got['w1_distance'] == pytest.approx(float(expected_w1))
+
+
+def test_sorted_reference_path_matches_full_stats():
+    rng = np.random.default_rng(7)
+    reference = rng.normal(size=15000)
+    sample = rng.normal(loc=-0.1, size=9000)
+
+    full = ks_w1_stats(reference, sample)
+    cached = ks_w1_stats_against_sorted_reference(np.sort(reference), sample)
+
+    assert cached['ks_distance'] == pytest.approx(full['ks_distance'])
+    assert cached['ks_pvalue'] == pytest.approx(full['ks_pvalue'])
+    assert cached['w1_distance'] == pytest.approx(full['w1_distance'])
