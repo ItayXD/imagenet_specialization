@@ -562,9 +562,13 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
 
 @jax.jit
 def _conv_init_pair_grams(member_kernels: jnp.ndarray, batch_x: jnp.ndarray) -> jnp.ndarray:
+    compute_dtype = jnp.result_type(member_kernels.dtype, batch_x.dtype)
+    kernels = jnp.asarray(member_kernels, dtype=compute_dtype)
+    x = jnp.asarray(batch_x, dtype=compute_dtype)
+
     def _member_features(kernel: jnp.ndarray) -> jnp.ndarray:
         conv_out = jax.lax.conv_general_dilated(
-            lhs=batch_x,
+            lhs=x,
             rhs=kernel,
             window_strides=(2, 2),
             padding=((3, 3), (3, 3)),
@@ -572,7 +576,7 @@ def _conv_init_pair_grams(member_kernels: jnp.ndarray, batch_x: jnp.ndarray) -> 
         )
         return jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, kernel.shape[-1]))
 
-    features = jax.vmap(_member_features)(member_kernels)
+    features = jax.vmap(_member_features)(kernels)
     return jnp.einsum(
         'mfw,nfz->mnwz',
         features,
