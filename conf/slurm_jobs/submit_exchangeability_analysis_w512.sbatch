@@ -4,7 +4,7 @@
 #SBATCH --partition=kempner
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=16
-#SBATCH --mem=96G
+#SBATCH --mem=192G
 #SBATCH --time=6:00:00
 
 set -euo pipefail

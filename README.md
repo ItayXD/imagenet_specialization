@@ -321,14 +321,17 @@ Default behavior:
 2. `--resume` is enabled by default (no recompute/overwrite of completed rows)
 3. after each job, per-width CSVs are merged into `$BASE_SAVE_DIR/exchangeability_metrics.csv` (existing rows in that CSV are preserved)
 4. similarity caches are written to `$BASE_SAVE_DIR/exchangeability_metrics_similarity` so notebook ECDF cache loading keeps working
-5. the merged CSV is what plotting/notebooks use
+5. width-512 auto-uses lower-memory analysis defaults unless overridden:
+   `--probe-loader-batch-size=32`, `--activation-chunk-size=8`, `--shuffle-batch-size=16`
+6. the merged CSV is what plotting/notebooks use
 
 Default SLURM resources for analysis submit wrappers:
 
 1. `--gpus=1`
 2. `--cpus-per-task=16`
 3. `--mem=96G`
-4. `--time=72:00:00`
+4. `--time=6:00:00`
+5. `submit_exchangeability_analysis_w512.sbatch` uses `--mem=192G`
 
 You can override any of these at submit time, for example:
 
