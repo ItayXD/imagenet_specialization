@@ -4,7 +4,7 @@ from src.run.OnlinePreprocessDevice import OnlinePreprocessDevice
 
 from src.tasks.task import Task, Task_ConfigSubset
 
-from os.path import join, exists
+from os.path import join, exists, isdir
 from os import mkdir
 
 from omegaconf import OmegaConf
@@ -36,9 +36,18 @@ class OnlineTaskRunner:
 
         save_folder = join(self.preprocess_device.save_dir, f'task-{task._id}')
         if exists(save_folder):
-            raise RuntimeError(f'Save folder for task {task._id} already exists.')
+            if not isdir(save_folder):
+                raise RuntimeError(
+                    f'Save path for task {task._id} exists but is not a directory: {save_folder}'
+                )
+            logging.warning(
+                f'Save folder for task {task._id} already exists; reusing {save_folder}.'
+            )
         else:
             mkdir(save_folder)
+
+        config_path = join(save_folder, 'task_config.yaml')
+        if not exists(config_path):
             save_config(save_folder, task)
 
         # TODO: this is hacky. separate into grid-search hyperparams
