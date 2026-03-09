@@ -36,7 +36,6 @@ from src.experiment.exchangeability_utils import (
     shuffled_similarity_values,
     two_sided_sigma_from_p,
 )
-from src.experiment.model.flax_mup.resnet import ResNet18
 from src.run.constants import IMAGENET_FOLDER
 
 
@@ -561,18 +560,25 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
 
 
 
-def _extract_conv_init_output(model, variables, batch_x):
-    _, mutable = model.apply(
-        variables,
-        batch_x,
-        train=False,
-        capture_intermediates=lambda mdl, _: getattr(mdl, 'name', '') == 'conv_init',
-        mutable=['intermediates'],
+@jax.jit
+def _conv_init_pair_grams(member_kernels: jnp.ndarray, batch_x: jnp.ndarray) -> jnp.ndarray:
+    def _member_features(kernel: jnp.ndarray) -> jnp.ndarray:
+        conv_out = jax.lax.conv_general_dilated(
+            lhs=batch_x,
+            rhs=kernel,
+            window_strides=(2, 2),
+            padding=((3, 3), (3, 3)),
+            dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
+        )
+        return jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, kernel.shape[-1]))
+
+    features = jax.vmap(_member_features)(member_kernels)
+    return jnp.einsum(
+        'mfw,nfz->mnwz',
+        features,
+        features,
+        precision=jax.lax.Precision.HIGHEST,
     )
-    intermediates = mutable['intermediates']
-    conv_init = intermediates['conv_init']
-    out = conv_init['__call__'][0]
-    return out
 
 
 
@@ -596,15 +602,21 @@ def _activation_similarity_matrix(
     if activation_chunk_size < 0:
         raise ValueError('activation_chunk_size must be non-negative.')
 
-    leaf = jax.tree_util.tree_leaves(member_variables[0]['params'])[0]
-    param_dtype = jnp.asarray(leaf).dtype
-    model = ResNet18(num_classes=1000, num_filters=width, param_dtype=param_dtype)
+    member_kernels = []
+    for member_idx, vars_ in enumerate(member_variables):
+        params = _get_nested_item(vars_, 'params')
+        kernel = _find_conv_init_kernel(params)
+        if kernel is None:
+            raise ValueError(f'Could not find conv_init kernel for member index {member_idx}.')
+        if int(kernel.shape[-1]) != int(width):
+            raise ValueError(
+                f'conv_init kernel output channels {kernel.shape[-1]} '
+                f'does not match requested width {width}.'
+            )
+        member_kernels.append(jnp.asarray(kernel))
+    kernels_stacked = jnp.stack(member_kernels, axis=0)
 
-    self_grams = [jnp.zeros((width, width), dtype=jnp.float32) for _ in range(num_members)]
-    cross_grams = {}
-    for e in range(num_members):
-        for f in range(e + 1, num_members):
-            cross_grams[(e, f)] = jnp.zeros((width, width), dtype=jnp.float32)
+    pair_grams = jnp.zeros((num_members, num_members, width, width), dtype=jnp.float32)
 
     batch_iter = _progress(
         probe_loader,
@@ -622,30 +634,15 @@ def _activation_similarity_matrix(
             x = jnp.asarray(batch_x[chunk_start:chunk_end])
 
             try:
-                member_features = []
-                member_iter = _progress(
-                    member_variables,
-                    desc=f'{progress_label} members',
-                    total=num_members,
-                    leave=False,
-                )
-                for vars_ in member_iter:
-                    conv_out = _extract_conv_init_output(model, vars_, x)
-                    feat = jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, width))
-                    member_features.append(feat)
-
-                for e in range(num_members):
-                    fe = member_features[e]
-                    self_grams[e] += fe.T @ fe
-
-                for e in range(num_members):
-                    fe = member_features[e]
-                    for f in range(e + 1, num_members):
-                        ff = member_features[f]
-                        cross_grams[(e, f)] += fe.T @ ff
-            except ValueError as exc:
+                pair_grams = pair_grams + _conv_init_pair_grams(kernels_stacked, x)
+                pair_grams.block_until_ready()
+            except Exception as exc:
                 message = str(exc)
-                is_oom = ('RESOURCE_EXHAUSTED' in message) or ('Out of memory' in message)
+                is_oom = (
+                    ('RESOURCE_EXHAUSTED' in message)
+                    or ('Out of memory' in message)
+                    or ('out of memory' in message)
+                )
                 if is_oom and chunk_size > 1:
                     new_chunk_size = max(1, chunk_size // 2)
                     if new_chunk_size == chunk_size:
@@ -666,8 +663,8 @@ def _activation_similarity_matrix(
 
             chunk_start = chunk_end
 
-    self_grams_np = [np.asarray(g, dtype=np.float64) for g in self_grams]
-    cross_grams_np = {k: np.asarray(v, dtype=np.float64) for k, v in cross_grams.items()}
+    pair_grams_np = np.asarray(pair_grams, dtype=np.float64)
+    self_grams_np = [pair_grams_np[e, e] for e in range(num_members)]
     norms = [np.sqrt(np.maximum(np.diag(g), 1e-12)) for g in self_grams_np]
 
     total = num_members * width
@@ -682,7 +679,7 @@ def _activation_similarity_matrix(
         for f in range(e + 1, num_members):
             f_start = f * width
             f_end = f_start + width
-            cross = _safe_cos_from_grams(cross_grams_np[(e, f)], norms[e], norms[f])
+            cross = _safe_cos_from_grams(pair_grams_np[e, f], norms[e], norms[f])
             sim[e_start:e_end, f_start:f_end] = cross
             sim[f_start:f_end, e_start:e_end] = cross.T
 
