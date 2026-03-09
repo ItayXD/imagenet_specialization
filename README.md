@@ -297,6 +297,47 @@ Expected terminal output:
 
 ## Analysis
 
+Run analysis as width-specific SLURM jobs (same analysis settings as `notebooks/exchangeability_analysis.ipynb`):
+
+```bash
+source scripts/cluster_env.sh
+sbatch conf/slurm_jobs/submit_exchangeability_analysis_w32.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_analysis_w64.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_analysis_w128.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_analysis_w256.sbatch
+sbatch conf/slurm_jobs/submit_exchangeability_analysis_w512.sbatch
+```
+
+Or submit all widths at once:
+
+```bash
+source scripts/cluster_env.sh
+bash conf/slurm_jobs/submit_exchangeability_analysis_all_widths.sh
+```
+
+Default behavior:
+
+1. each width writes to `$BASE_SAVE_DIR/exchangeability_metrics_w{width}.csv`
+2. `--resume` is enabled by default (no recompute/overwrite of completed rows)
+3. after each job, per-width CSVs are merged into `$BASE_SAVE_DIR/exchangeability_metrics.csv` (existing rows in that CSV are preserved)
+4. similarity caches are written to `$BASE_SAVE_DIR/exchangeability_metrics_similarity` so notebook ECDF cache loading keeps working
+5. the merged CSV is what plotting/notebooks use
+
+Default SLURM resources for analysis submit wrappers:
+
+1. `--gpus=1`
+2. `--cpus-per-task=16`
+3. `--mem=96G`
+4. `--time=72:00:00`
+
+You can override any of these at submit time, for example:
+
+```bash
+sbatch --time=96:00:00 --mem=128G conf/slurm_jobs/submit_exchangeability_analysis_w512.sbatch
+```
+
+Manual non-SLURM run (single process):
+
 ```bash
 source scripts/cluster_env.sh
 uv run python scripts/analyze_exchangeability.py \
@@ -306,7 +347,8 @@ uv run python scripts/analyze_exchangeability.py \
   --output-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
   --shuffle-repeats 2000 \
   --probe-batch-size 1024 \
-  --probe-loader-batch-size 1
+  --probe-loader-batch-size 128 \
+  --resume
 ```
 
 ## Plotting
