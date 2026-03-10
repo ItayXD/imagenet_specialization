@@ -209,6 +209,9 @@ def _plot_within_observed_significance(
     metrics_df: pd.DataFrame,
     out_dir: str,
     close: bool = True,
+    width_colors: Mapping[int | str, str] | None = None,
+    representation_linestyles: Mapping[str, str] | None = None,
+    representation_order: Sequence[str] | None = None,
 ):
     subset = metrics_df[
         (metrics_df['analysis_type'] == 'within_vs_across_real')
@@ -241,13 +244,13 @@ def _plot_within_observed_significance(
         ),
         (
             'ks_sigma_empirical_two_sided',
-            'KS Empirical Sigma (Two-Sided) vs Images Seen',
+            'KS Empirical Sigma vs Images Seen',
             'ks_sigma_empirical_two_sided_vs_images_seen.pdf',
             'ks_p_empirical',
         ),
         (
             'w1_sigma_empirical_two_sided',
-            'W1 Empirical Sigma (Two-Sided) vs Images Seen',
+            'W1 Empirical Sigma vs Images Seen',
             'w1_sigma_empirical_two_sided_vs_images_seen.pdf',
             'w1_p_empirical',
         ),
@@ -262,10 +265,48 @@ def _plot_within_observed_significance(
             continue
 
         fig = plt.figure(figsize=(10, 6))
-        for (representation, width), sub in plot_df.groupby(['representation', 'width']):
+        if representation_order is None:
+            ordered_representations = sorted(plot_df['representation'].astype(str).unique().tolist())
+        else:
+            present = set(plot_df['representation'].astype(str).unique().tolist())
+            ordered_representations = [rep for rep in representation_order if rep in present]
+            ordered_representations.extend(sorted(present - set(ordered_representations)))
+
+        group_rows = plot_df[['representation', 'width']].drop_duplicates()
+        ordered_groups = sorted(
+            group_rows.itertuples(index=False, name=None),
+            key=lambda t: (
+                ordered_representations.index(str(t[0])) if str(t[0]) in ordered_representations else 10**9,
+                float(t[1]),
+            ),
+        )
+
+        for representation, width in ordered_groups:
+            sub = plot_df[
+                (plot_df['representation'] == representation)
+                & (plot_df['width'] == width)
+            ]
             sub = sub.sort_values('images_seen')
             label = f'{representation} N={int(width)}'
-            plt.plot(sub['images_seen'], sub[metric], marker='o', label=label)
+            color = None
+            if width_colors is not None:
+                width_int = int(width)
+                width_key = width_int if width_int in width_colors else str(width_int)
+                color = width_colors.get(width_key)
+            linestyle = (
+                representation_linestyles.get(str(representation), '-')
+                if representation_linestyles is not None
+                else '-'
+            )
+
+            plt.plot(
+                sub['images_seen'],
+                sub[metric],
+                marker='o',
+                label=label,
+                color=color,
+                linestyle=linestyle,
+            )
 
             # Mark finite-shuffle floor saturation points for empirical statistics.
             if empirical_p_col and empirical_p_col in sub.columns and 'empirical_null_count' in sub.columns:
@@ -288,14 +329,17 @@ def _plot_within_observed_significance(
                         marker='x',
                         s=40,
                         linewidths=1.4,
-                        color='black',
+                        color=color if color is not None else 'black',
                         alpha=0.8,
-                        label=f'{label} (floor)',
+                        label='_nolegend_',
                     )
 
         plt.xscale('log')
         plt.xlabel('Images seen (P)')
-        plt.ylabel(metric.replace('_', ' ').title())
+        ylabel = metric.replace('_', ' ').title()
+        if empirical_p_col is not None:
+            ylabel = ylabel.replace(' Two Sided', '')
+        plt.ylabel(ylabel)
         plt.title(title)
         plt.grid(True, alpha=0.25)
         plt.legend(fontsize=8, ncol=2)
