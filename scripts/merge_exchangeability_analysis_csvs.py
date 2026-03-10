@@ -54,14 +54,24 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _coerce_int(value: str, *, field: str, default_if_blank: int | None = None) -> int:
+    text = '' if value is None else str(value).strip()
+    if text == '' and default_if_blank is not None:
+        return default_if_blank
+    try:
+        return int(text)
+    except ValueError as exc:
+        raise ValueError(f'Invalid integer for {field}: {value!r}') from exc
+
+
 def _row_identity(row: dict[str, str]) -> tuple[int, str, int, str, str, int]:
     return (
-        int(row['width']),
+        _coerce_int(row.get('width', ''), field='width'),
         str(row.get('source_run_id', '')),
-        int(row['images_seen']),
+        _coerce_int(row.get('images_seen', ''), field='images_seen'),
         str(row['representation']),
         str(row['analysis_type']),
-        int(row['shuffle_id']),
+        _coerce_int(row.get('shuffle_id', ''), field='shuffle_id', default_if_blank=-1),
     )
 
 
@@ -89,6 +99,9 @@ def _read_rows(path: str) -> list[dict[str, str]]:
     normalized_rows: list[dict[str, str]] = []
     for row in rows:
         normalized = {field: row.get(field, '') for field in ANALYSIS_FIELDNAMES}
+        normalized['shuffle_id'] = str(
+            _coerce_int(normalized.get('shuffle_id', ''), field='shuffle_id', default_if_blank=-1)
+        )
         normalized_rows.append(normalized)
     return normalized_rows
 
