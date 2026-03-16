@@ -4,6 +4,7 @@ import pytest
 from src.experiment.exchangeability_utils import (
     abs_cosine_similarity_matrix,
     build_member_ids,
+    cosine_similarity_matrix,
     extract_across_values,
     extract_within_values,
     flatten_permute_reshape_indices,
@@ -20,6 +21,19 @@ def test_make_target_points_includes_horizon():
     targets = make_target_points(1000, [100, 500, 1500])
     assert targets == [100, 500, 1000]
 
+
+
+def test_cosine_similarity_preserves_sign():
+    x = np.array(
+        [
+            [1.0, 0.0],
+            [-1.0, 0.0],
+        ],
+        dtype=np.float64,
+    )
+    sim = cosine_similarity_matrix(x, x)
+    assert np.allclose(np.diag(sim), 1.0)
+    assert sim[0, 1] == pytest.approx(-1.0)
 
 
 def test_abs_cosine_similarity_identity():

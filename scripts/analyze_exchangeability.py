@@ -26,8 +26,8 @@ from torchvision.datasets import ImageFolder, ImageNet
 import torchvision.transforms as transforms
 
 from src.experiment.exchangeability_utils import (
-    abs_cosine_similarity_matrix,
     build_member_ids,
+    cosine_similarity_matrix,
     extract_across_values,
     extract_within_values,
     ks_w1_stats,
@@ -589,7 +589,7 @@ def _conv_init_pair_grams(member_kernels: jnp.ndarray, batch_x: jnp.ndarray) -> 
 def _safe_cos_from_grams(gram: np.ndarray, norm_left: np.ndarray, norm_right: np.ndarray) -> np.ndarray:
     denom = np.outer(norm_left, norm_right)
     denom = np.where(denom == 0.0, 1.0, denom)
-    return np.abs(gram / denom)
+    return gram / denom
 
 
 
@@ -693,7 +693,7 @@ def _activation_similarity_matrix(
 
 def _weight_similarity_matrix(weights: np.ndarray) -> np.ndarray:
     flat = weights.reshape((weights.shape[0] * weights.shape[1], -1))
-    return abs_cosine_similarity_matrix(flat, flat)
+    return cosine_similarity_matrix(flat, flat)
 
 
 

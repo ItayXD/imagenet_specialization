@@ -31,10 +31,14 @@ def make_target_points(target_images_seen: int, p_targets_images_seen: list[int]
 
 
 
-def abs_cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+def cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
     a_n = normalize_rows(a)
     b_n = normalize_rows(b)
-    return np.abs(a_n @ b_n.T)
+    return a_n @ b_n.T
+
+
+def abs_cosine_similarity_matrix(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    return np.abs(cosine_similarity_matrix(a, b))
 
 
 
