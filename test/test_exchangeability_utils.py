@@ -13,6 +13,8 @@ from src.experiment.exchangeability_utils import (
     make_target_points,
     shuffled_similarity_values,
     shuffled_similarity_values_batched,
+    w1_distance,
+    w1_distance_against_sorted_reference,
 )
 
 
@@ -128,6 +130,29 @@ def test_ks_w1_stats_matches_scipy_large_auto_asymp():
     assert got['ks_distance'] == pytest.approx(float(expected_ks.statistic))
     assert got['ks_pvalue'] == pytest.approx(float(expected_ks.pvalue))
     assert got['w1_distance'] == pytest.approx(float(expected_w1))
+
+
+def test_w1_distance_matches_scipy_with_repeated_values():
+    scipy_stats = pytest.importorskip('scipy.stats')
+    wasserstein_distance = scipy_stats.wasserstein_distance
+
+    x = np.array([0.0, 0.0, 1.0, 2.0, 2.0, 2.0], dtype=np.float64)
+    y = np.array([-1.0, 0.0, 0.0, 0.5, 2.0, 3.0], dtype=np.float64)
+
+    got = w1_distance(x, y)
+    expected = float(wasserstein_distance(x, y))
+
+    assert got == pytest.approx(expected)
+
+
+def test_w1_distance_sorted_reference_matches_full():
+    rng = np.random.default_rng(9)
+    reference = rng.normal(size=4000)
+    sample = rng.normal(loc=0.2, size=3500)
+
+    assert w1_distance_against_sorted_reference(np.sort(reference), sample) == pytest.approx(
+        w1_distance(reference, sample)
+    )
 
 
 def test_sorted_reference_path_matches_full_stats():

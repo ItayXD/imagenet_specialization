@@ -126,23 +126,88 @@ def _ks_distance_numpy(x: np.ndarray, y: np.ndarray) -> float:
 
 
 
+def _w1_distance_from_sorted(x_sorted: np.ndarray, y_sorted: np.ndarray) -> float:
+    if x_sorted.size == 0 or y_sorted.size == 0:
+        raise ValueError('Both samples must be non-empty.')
+
+    x_size = int(x_sorted.size)
+    y_size = int(y_sorted.size)
+    x_idx = 0
+    y_idx = 0
+    cdf_x = 0.0
+    cdf_y = 0.0
+    prev_value = None
+    w1_distance = 0.0
+
+    while x_idx < x_size or y_idx < y_size:
+        next_x = x_sorted[x_idx] if x_idx < x_size else np.inf
+        next_y = y_sorted[y_idx] if y_idx < y_size else np.inf
+        current_value = float(next_x if next_x <= next_y else next_y)
+
+        if prev_value is not None:
+            delta = current_value - prev_value
+            if delta != 0.0:
+                w1_distance += abs(cdf_x - cdf_y) * delta
+
+        while x_idx < x_size and float(x_sorted[x_idx]) <= current_value:
+            x_idx += 1
+        while y_idx < y_size and float(y_sorted[y_idx]) <= current_value:
+            y_idx += 1
+
+        cdf_x = x_idx / x_size
+        cdf_y = y_idx / y_size
+        prev_value = current_value
+
+    return float(w1_distance)
+
+
+def w1_distance(x: np.ndarray, y: np.ndarray) -> float:
+    if x.size == 0 or y.size == 0:
+        raise ValueError('Both samples must be non-empty.')
+    return _w1_distance_from_sorted(np.sort(x), np.sort(y))
+
+
+def w1_distance_against_sorted_reference(reference_sorted: np.ndarray, sample: np.ndarray) -> float:
+    if reference_sorted.size == 0 or sample.size == 0:
+        raise ValueError('Both samples must be non-empty.')
+    return _w1_distance_from_sorted(reference_sorted, np.sort(sample))
+
+
 def _ks_w1_from_sorted(x_sorted: np.ndarray, y_sorted: np.ndarray) -> tuple[float, float]:
-    all_values = np.concatenate((x_sorted, y_sorted))
-    all_values.sort(kind='mergesort')
+    if x_sorted.size == 0 or y_sorted.size == 0:
+        raise ValueError('Both samples must be non-empty.')
 
-    cdf_x = np.searchsorted(x_sorted, all_values, side='right') / x_sorted.size
-    cdf_y = np.searchsorted(y_sorted, all_values, side='right') / y_sorted.size
-    cdf_diff = cdf_x - cdf_y
+    x_size = int(x_sorted.size)
+    y_size = int(y_sorted.size)
+    x_idx = 0
+    y_idx = 0
+    cdf_x = 0.0
+    cdf_y = 0.0
+    prev_value = None
+    ks_distance = 0.0
+    w1_distance = 0.0
 
-    ks_distance = float(np.max(np.abs(cdf_diff)))
+    while x_idx < x_size or y_idx < y_size:
+        next_x = x_sorted[x_idx] if x_idx < x_size else np.inf
+        next_y = y_sorted[y_idx] if y_idx < y_size else np.inf
+        current_value = float(next_x if next_x <= next_y else next_y)
 
-    deltas = np.diff(all_values)
-    if deltas.size == 0:
-        w1_distance = 0.0
-    else:
-        w1_distance = float(np.dot(np.abs(cdf_diff[:-1]), deltas))
+        if prev_value is not None:
+            delta = current_value - prev_value
+            if delta != 0.0:
+                w1_distance += abs(cdf_x - cdf_y) * delta
 
-    return ks_distance, w1_distance
+        while x_idx < x_size and float(x_sorted[x_idx]) <= current_value:
+            x_idx += 1
+        while y_idx < y_size and float(y_sorted[y_idx]) <= current_value:
+            y_idx += 1
+
+        cdf_x = x_idx / x_size
+        cdf_y = y_idx / y_size
+        ks_distance = max(ks_distance, abs(cdf_x - cdf_y))
+        prev_value = current_value
+
+    return float(ks_distance), float(w1_distance)
 
 
 def _ks_pvalue_from_distance(ks_distance: float, n1: int, n2: int) -> float:
