@@ -1,0 +1,6 @@
+job_id,dataset,width,group_id,experiment_name
+0,cifar5m,32,0,cifar5m_exchangeability_w32_g0
+1,cifar5m,64,0,cifar5m_exchangeability_w64_g0
+2,cifar5m,128,0,cifar5m_exchangeability_w128_g0
+3,cifar5m,256,0,cifar5m_exchangeability_w256_g0
+4,cifar5m,512,0,cifar5m_exchangeability_w512_g0
