@@ -13,6 +13,7 @@ from scripts.analyze_exchangeability import (
 
 def _base_row(**overrides):
     row = {
+        'dataset': 'imagenet',
         'width': 32,
         'images_seen': 100000,
         'representation': 'weights',
@@ -107,7 +108,7 @@ def test_resume_backfill_populates_new_columns_without_recompute(tmp_path):
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=legacy_fieldnames)
         writer.writeheader()
-        writer.writerows(rows)
+        writer.writerows([{k: v for k, v in row.items() if k in legacy_fieldnames} for row in rows])
 
     completed_reps, rows_written, file_mode = _prepare_resume_state(
         output_csv=str(csv_path),
@@ -116,7 +117,7 @@ def test_resume_backfill_populates_new_columns_without_recompute(tmp_path):
         resume=True,
     )
 
-    assert completed_reps == {(32, '', 100000, 'weights')}
+    assert completed_reps == {('imagenet', 32, '', 100000, 'weights')}
     assert rows_written == 5
     assert file_mode == 'a'
 

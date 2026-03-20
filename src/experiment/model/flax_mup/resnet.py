@@ -96,6 +96,7 @@ class ResNet(nn.Module):
 		stage_sizes: Sequence[int]
 		block_cls: ModuleDef
 		num_classes: int
+		stem_type: str = 'imagenet'
 		num_filters: int = 64
 		act: Callable = nn.relu
 		conv: ModuleDef = nn.Conv
@@ -113,7 +114,15 @@ class ResNet(nn.Module):
 											 use_running_average=not train,
 											 momentum=0.9,
 											 epsilon=1e-5)
-				x = conv(self.num_filters, (7, 7), (2, 2),
+				if self.stem_type == 'cifar':
+						x = conv(self.num_filters, (3, 3), (1, 1),
+								 padding='SAME',
+								 kernel_init=self.kernel_init,
+								 bias_init=self.bias_init,
+								 param_dtype=self.param_dtype,
+								 name='conv_init')(x)
+				else:
+						x = conv(self.num_filters, (7, 7), (2, 2),
 								 padding=[(3, 3), (3, 3)],
 								 kernel_init=self.kernel_init,
 								 bias_init=self.bias_init,
@@ -122,7 +131,8 @@ class ResNet(nn.Module):
 				x = norm(name='bn_init', param_dtype=self.param_dtype,
 								 dtype=self.param_dtype)(x)
 				x = nn.relu(x)
-				x = nn.max_pool(x, (3, 3), strides=(2, 2), padding='SAME')
+				if self.stem_type != 'cifar':
+						x = nn.max_pool(x, (3, 3), strides=(2, 2), padding='SAME')
 				for i, block_size in enumerate(self.stage_sizes):
 						for j in range(block_size):
 								strides = (2, 2) if i > 0 and j == 0 else (1, 1)
@@ -153,5 +163,4 @@ ResNet152 = partial(ResNet, stage_sizes=[3, 8, 36, 3],
 										block_cls=BottleneckResNetBlock)
 ResNet200 = partial(ResNet, stage_sizes=[3, 24, 36, 3],
 										block_cls=BottleneckResNetBlock)
-
 

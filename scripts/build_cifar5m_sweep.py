@@ -20,19 +20,20 @@ from config_structs import (
 )
 
 CONFIG_DIR = '../conf/experiment'
-CONFIG_NAME = 'exchangeability_w{width}_g{group_id}.yaml'
+CONFIG_NAME = 'cifar5m_exchangeability_w{width}_g{group_id}.yaml'
 
 WIDTHS = (32, 64, 128, 256, 512)
 TARGET_MEMBERS_PER_WIDTH = 16
 DEFAULT_MEMBERS_PER_GROUP = 4
+TARGET_IMAGES_SEEN = 5_000_000
+FULL_CIFAR5M_TRAIN_SIZE = 5_000_000
 
 DEFAULT_CLUSTER_ROOT = os.environ.get(
     'EXCHANGEABILITY_ROOT',
     '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie',
 )
-BASE_DIR = DEFAULT_CLUSTER_ROOT + '/exchangeability_runs/w{width}/g{group_id}'
-RUN_ID = 'exchangeability_imagenet'
-FULL_IMAGENET_TRAIN_SIZE = 1_281_167
+BASE_DIR = DEFAULT_CLUSTER_ROOT + '/exchangeability_runs/cifar5m/w{width}/g{group_id}'
+RUN_ID = 'exchangeability_cifar5m'
 WANDB_PROJECT = os.environ.get('WANDB_PROJECT', 'imagenet_specialization')
 WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')
 
@@ -65,7 +66,6 @@ def num_workers_for_width(width: int) -> int:
     return 8
 
 
-
 def build_p_targets() -> list[int]:
     return [
         10000,
@@ -83,21 +83,17 @@ def build_p_targets() -> list[int]:
         1930698,
         2682695,
         3727593,
-        5179474,
-        7196856,
-        10000000,
+        5000000,
     ]
 
 
-
-def clear_exchangeability_configs(folder: str) -> None:
+def clear_cifar5m_exchangeability_configs(folder: str) -> None:
     for name in os.listdir(folder):
-        if name.startswith('exchangeability_') and name.endswith('.yaml'):
+        if name.startswith('cifar5m_exchangeability_') and name.endswith('.yaml'):
             os.unlink(join(folder, name))
 
 
-
-def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tuple[str, str]]:
+def build_configs(seed_base: int = 20260319, data_seed: int = 2423) -> list[tuple[str, str]]:
     rng = random.Random(seed_base)
     p_targets = build_p_targets()
 
@@ -118,7 +114,7 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
                 epochs=50,
                 ensemble_subsets=1,
                 use_warmup_cosine_decay=True,
-                target_images_seen=10_000_000,
+                target_images_seen=TARGET_IMAGES_SEEN,
                 p_targets_images_seen=p_targets,
                 wandb_enabled=True,
                 wandb_project=WANDB_PROJECT,
@@ -142,13 +138,17 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
 
             task = TaskConfig(training_params=tp, model_params=mp, seed=task_seed)
             data_params = DataParams(
-                P=FULL_IMAGENET_TRAIN_SIZE,
+                P=FULL_CIFAR5M_TRAIN_SIZE,
                 data_seed=data_seed,
                 root_dir='data-dir',
                 val_P=1024,
             )
             tlc = TaskListConfig(task_list=[task], data_params=data_params)
-            cfg = Config(setting=Setting(dataset='imagenet', model='resnet18'), hyperparams=tlc, base_dir=BASE_DIR.format(width=width, group_id=group_id))
+            cfg = Config(
+                setting=Setting(dataset='cifar5m', model='resnet18'),
+                hyperparams=tlc,
+                base_dir=BASE_DIR.format(width=width, group_id=group_id),
+            )
 
             cfg_name = CONFIG_NAME.format(width=width, group_id=group_id)
             cfg_text = '# @package _global_\n' + OmegaConf.to_yaml(cfg)
@@ -157,11 +157,10 @@ def build_configs(seed_base: int = 20260228, data_seed: int = 2423) -> list[tupl
     return outputs
 
 
-
 if __name__ == '__main__':
     curr_dir = dirname(__file__)
     config_save_folder = join(curr_dir, CONFIG_DIR)
-    clear_exchangeability_configs(config_save_folder)
+    clear_cifar5m_exchangeability_configs(config_save_folder)
 
     for name, content in build_configs():
         with open(join(config_save_folder, name), 'w', encoding='utf-8') as f:

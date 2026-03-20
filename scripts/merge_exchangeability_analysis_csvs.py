@@ -10,6 +10,7 @@ from tempfile import NamedTemporaryFile
 
 
 ANALYSIS_FIELDNAMES = [
+    'dataset',
     'width',
     'source_run_id',
     'images_seen',
@@ -66,6 +67,7 @@ def _coerce_int(value: str, *, field: str, default_if_blank: int | None = None) 
 
 def _row_identity(row: dict[str, str]) -> tuple[int, str, int, str, str, int]:
     return (
+        str(row.get('dataset', 'imagenet') or 'imagenet'),
         _coerce_int(row.get('width', ''), field='width'),
         str(row.get('source_run_id', '')),
         _coerce_int(row.get('images_seen', ''), field='images_seen'),
@@ -99,6 +101,7 @@ def _read_rows(path: str) -> list[dict[str, str]]:
     normalized_rows: list[dict[str, str]] = []
     for row in rows:
         normalized = {field: row.get(field, '') for field in ANALYSIS_FIELDNAMES}
+        normalized['dataset'] = str(normalized.get('dataset', '') or 'imagenet')
         normalized['shuffle_id'] = str(
             _coerce_int(normalized.get('shuffle_id', ''), field='shuffle_id', default_if_blank=-1)
         )

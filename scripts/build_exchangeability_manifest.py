@@ -15,6 +15,8 @@ from src.run.constants import BASE_SAVE_DIR
 @dataclass
 class ManifestRow:
     job_id: int
+    dataset: str
+    run_id: str
     width: int
     group_id: int
     member_seed_list: list[int]
@@ -33,6 +35,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--config-dir', default='conf/experiment', help='Directory containing exchangeability_*.yaml configs')
     parser.add_argument('--output', default='conf/exchangeability_manifest.csv', help='Manifest CSV path')
     parser.add_argument('--base-save-dir', default=BASE_SAVE_DIR or '/tmp/exchangeability_outputs', help='Base save directory used by training runs')
+    parser.add_argument('--dataset', default='', help='Optional dataset filter (for example imagenet or cifar5m)')
     return parser.parse_args()
 
 
@@ -46,7 +49,7 @@ def _derive_member_seeds(task_seed: int, member_group_size: int) -> list[int]:
 def _iter_config_paths(config_dir: str) -> list[str]:
     names = sorted(
         n for n in os.listdir(config_dir)
-        if n.startswith('exchangeability_') and n.endswith('.yaml')
+        if ('exchangeability' in n) and n.endswith('.yaml')
     )
     return [join(config_dir, n) for n in names]
 
@@ -54,6 +57,7 @@ def _iter_config_paths(config_dir: str) -> list[str]:
 
 def _parse_row(job_id: int, cfg_path: str, base_save_dir: str) -> ManifestRow:
     cfg = OmegaConf.load(cfg_path)
+    dataset = str(cfg.setting.dataset)
     tp = cfg.hyperparams.task_list[0].training_params
     mp = cfg.hyperparams.task_list[0].model_params
     task_seed = int(cfg.hyperparams.task_list[0].seed)
@@ -70,6 +74,8 @@ def _parse_row(job_id: int, cfg_path: str, base_save_dir: str) -> ManifestRow:
 
     return ManifestRow(
         job_id=job_id,
+        dataset=dataset,
+        run_id=run_id,
         width=width,
         group_id=group_id,
         member_seed_list=member_seed_list,
@@ -91,6 +97,8 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
             f,
             fieldnames=[
                 'job_id',
+                'dataset',
+                'run_id',
                 'width',
                 'group_id',
                 'member_seed_list',
@@ -108,6 +116,8 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
             writer.writerow(
                 {
                     'job_id': row.job_id,
+                    'dataset': row.dataset,
+                    'run_id': row.run_id,
                     'width': row.width,
                     'group_id': row.group_id,
                     'member_seed_list': json.dumps(row.member_seed_list),
@@ -126,7 +136,12 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
 def main() -> None:
     args = parse_args()
     config_paths = _iter_config_paths(args.config_dir)
-    rows = [_parse_row(job_id=i, cfg_path=path, base_save_dir=args.base_save_dir) for i, path in enumerate(config_paths)]
+    rows = []
+    for path in config_paths:
+        row = _parse_row(job_id=len(rows), cfg_path=path, base_save_dir=args.base_save_dir)
+        if args.dataset and row.dataset != args.dataset:
+            continue
+        rows.append(row)
     write_manifest(rows, args.output)
     print(f'Wrote {len(rows)} rows to {args.output}')
 

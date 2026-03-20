@@ -12,6 +12,7 @@ def _write_csv(path, fieldnames, rows):
 
 def _base_row():
     return {
+        'dataset': 'imagenet',
         'width': '256',
         'source_run_id': 'exchangeability_job123',
         'images_seen': '7196856',
@@ -52,4 +53,5 @@ def test_merge_rows_handles_legacy_blank_shuffle_id(tmp_path):
     merged = _merge_rows([str(legacy_csv), str(current_csv)])
 
     assert len(merged) == 1
+    assert merged[0]['dataset'] == 'imagenet'
     assert merged[0]['shuffle_id'] == '-1'

@@ -22,6 +22,7 @@ class OnlineTaskRunner:
         devices = self.preprocess_device.devices
         
         mp, tp = dict(task.model_params), dict(task.training_params)
+        tp['dataset'] = task.dataset
 
         # TODO: hacky way to transition to ensembling within GPU
         # iters = len(widths) // num_devices
@@ -65,7 +66,7 @@ class OnlineTaskRunner:
             train_data,
             minibatch_size,
             num_workers=num_workers,
-            drop_last=True,
+            drop_last=False,
             persistent_workers=use_persistent_workers,
             shuffle=True,
         )

@@ -6,6 +6,10 @@ DEFAULT_CLUSTER_ROOT = os.environ.get(
 )
 
 CIFAR_FOLDER = os.environ.get('CIFAR_FOLDER')
+CIFAR5M_FOLDER = os.environ.get(
+    'CIFAR5M_FOLDER',
+    os.path.join(DEFAULT_CLUSTER_ROOT, 'cifar5m'),
+)
 REMOTE_RESULTS_FOLDER = os.environ.get(
     'REMOTE_RESULTS_FOLDER',
     DEFAULT_CLUSTER_ROOT,

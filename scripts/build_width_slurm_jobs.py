@@ -85,6 +85,13 @@ def _group_by_width(rows: list[dict[str, str]]) -> dict[int, list[dict[str, str]
     return dict(sorted(grouped.items()))
 
 
+def _manifest_dataset(rows: list[dict[str, str]]) -> str:
+    datasets = sorted({str(row.get('dataset', '')).strip() for row in rows if str(row.get('dataset', '')).strip()})
+    if len(datasets) == 1:
+        return datasets[0]
+    return ''
+
+
 def _write_csv(path: str, rows: list[dict[str, str]], fieldnames: list[str]) -> None:
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, 'w', encoding='utf-8', newline='') as f:
@@ -106,6 +113,7 @@ def _script_text(
     mem: str,
     manifest_relpath: str,
     job_name_prefix: str,
+    submit_name: str,
 ) -> str:
     return f"""#!/usr/bin/env bash
 #SBATCH --job-name={job_name_prefix}{width}
@@ -121,7 +129,7 @@ set -euo pipefail
 
 if [[ -z "${{SLURM_JOB_ID:-}}" ]]; then
   echo "This script must be submitted with sbatch." >&2
-  echo "Usage: sbatch conf/slurm_jobs/submit_exchangeability_w{width}.sbatch" >&2
+  echo "Usage: sbatch conf/slurm_jobs/{submit_name}" >&2
   exit 2
 fi
 
@@ -146,6 +154,7 @@ def main() -> None:
     manifest_rows = _load_manifest_rows(args.manifest)
     timing_by_width = _load_times(args.timing_width_csv, args.time_column)
     grouped = _group_by_width(manifest_rows)
+    dataset = _manifest_dataset(manifest_rows)
 
     manifest_abs_dir = os.path.abspath(args.manifest_output_dir)
     slurm_abs_dir = os.path.abspath(args.slurm_output_dir)
@@ -161,13 +170,17 @@ def main() -> None:
                 f'Missing width={width} in timing CSV {args.timing_width_csv}; cannot set walltime.'
             )
 
-        manifest_name = f'exchangeability_manifest_w{width}.csv'
+        if dataset:
+            manifest_name = f'{dataset}_exchangeability_manifest_w{width}.csv'
+            submit_name = f'submit_exchangeability_{dataset}_w{width}.sbatch'
+        else:
+            manifest_name = f'exchangeability_manifest_w{width}.csv'
+            submit_name = f'submit_exchangeability_w{width}.sbatch'
         manifest_abs_path = os.path.join(manifest_abs_dir, manifest_name)
         _write_csv(manifest_abs_path, rows, fieldnames)
 
         # Store paths in repo-relative form so generated scripts are portable.
         manifest_relpath = os.path.relpath(manifest_abs_path, os.getcwd())
-        submit_name = f'submit_exchangeability_w{width}.sbatch'
         submit_abs_path = os.path.join(slurm_abs_dir, submit_name)
         text = _script_text(
             width=width,
@@ -180,13 +193,15 @@ def main() -> None:
             mem=args.mem,
             manifest_relpath=manifest_relpath,
             job_name_prefix=args.job_name_prefix,
+            submit_name=submit_name,
         )
         with open(submit_abs_path, 'w', encoding='utf-8') as f:
             f.write(text)
 
         submit_paths.append(os.path.relpath(submit_abs_path, os.getcwd()))
 
-    submit_all_abs = os.path.join(slurm_abs_dir, 'submit_exchangeability_all_widths.sh')
+    submit_all_name = f'submit_exchangeability_{dataset}_all_widths.sh' if dataset else 'submit_exchangeability_all_widths.sh'
+    submit_all_abs = os.path.join(slurm_abs_dir, submit_all_name)
     submit_all_rel = os.path.relpath(submit_all_abs, os.getcwd())
     with open(submit_all_abs, 'w', encoding='utf-8') as f:
         f.write('#!/usr/bin/env bash\n')

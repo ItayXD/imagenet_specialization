@@ -88,3 +88,47 @@ def test_builds_width_specific_manifests_and_submit_scripts(tmp_path, monkeypatc
     submit_all_text = submit_all.read_text(encoding='utf-8')
     assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w32.sbatch"' in submit_all_text
     assert 'sbatch "conf/slurm_jobs/submit_exchangeability_w64.sbatch"' in submit_all_text
+
+
+def test_builds_dataset_aware_names_when_manifest_has_dataset(tmp_path, monkeypatch):
+    manifest_path = tmp_path / 'conf' / 'exchangeability_manifest.csv'
+    timing_path = tmp_path / 'timing_by_width.csv'
+    manifest_out = tmp_path / 'conf' / 'manifests_by_width'
+    slurm_out = tmp_path / 'conf' / 'slurm_jobs'
+
+    _write_csv(
+        str(manifest_path),
+        fieldnames=['job_id', 'dataset', 'width', 'group_id', 'experiment_name'],
+        rows=[
+            {'job_id': '0', 'dataset': 'cifar5m', 'width': '32', 'group_id': '0', 'experiment_name': 'cifar5m_exchangeability_w32_g0'},
+        ],
+    )
+    _write_csv(
+        str(timing_path),
+        fieldnames=['width', 'recommended_sbatch_time'],
+        rows=[{'width': '32', 'recommended_sbatch_time': '06:00:00'}],
+    )
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(
+        'sys.argv',
+        [
+            'build_width_slurm_jobs.py',
+            '--manifest',
+            str(manifest_path),
+            '--timing-width-csv',
+            str(timing_path),
+            '--manifest-output-dir',
+            str(manifest_out),
+            '--slurm-output-dir',
+            str(slurm_out),
+        ],
+    )
+
+    main()
+
+    assert (manifest_out / 'cifar5m_exchangeability_manifest_w32.csv').exists()
+    assert (slurm_out / 'submit_exchangeability_cifar5m_w32.sbatch').exists()
+    submit_all = slurm_out / 'submit_exchangeability_cifar5m_all_widths.sh'
+    assert submit_all.exists()
+    assert 'submit_exchangeability_cifar5m_w32.sbatch' in submit_all.read_text(encoding='utf-8')

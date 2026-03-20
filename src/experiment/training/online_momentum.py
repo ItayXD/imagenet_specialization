@@ -16,13 +16,11 @@ from flax.training import checkpoints, train_state
 from jax import ShapeDtypeStruct, jit, tree_map, value_and_grad, vmap
 from jax.random import split
 
+from src.experiment.dataset_specs import get_dataset_spec
 from src.experiment.model.flax_mup.mup import Mup
 from src.experiment.model.flax_mup.resnet import ResNet18
 from src.experiment.exchangeability_utils import make_target_points
 from src.run.constants import BASE_SAVE_DIR
-
-NUM_CLASSES = 1_000
-IMAGENET_SHAPE = (224, 224, 3)
 
 # Backward-compatible alias for existing callers/tests that used the old location.
 _make_target_points = make_target_points
@@ -97,6 +95,7 @@ def _resolve_run_dirs(training_params: dict, N: int, n_ensemble: int) -> dict[st
     run_id = str(training_params.get('run_id', 'exchangeability'))
     width = int(training_params.get('width', N))
     group_id = int(training_params.get('group_id', 0))
+    dataset = str(training_params.get('dataset', 'imagenet'))
 
     base_dir = BASE_SAVE_DIR or os.path.join(os.getcwd(), 'outputs')
     run_dir = os.path.join(base_dir, run_id, f'width_{width}', f'group_{group_id}')
@@ -111,6 +110,7 @@ def _resolve_run_dirs(training_params: dict, N: int, n_ensemble: int) -> dict[st
     _ensure_dir(artifact_dir)
 
     metadata = {
+        'dataset': dataset,
         'run_id': run_id,
         'width': width,
         'group_id': group_id,
@@ -146,6 +146,7 @@ def _init_wandb(training_params: dict, model_params: dict, n_ensemble: int):
     run_id = str(training_params.get('run_id', 'exchangeability'))
     width = int(training_params.get('width', model_params.get('N', 0)))
     group_id = int(training_params.get('group_id', 0))
+    dataset = str(training_params.get('dataset', 'imagenet'))
 
     common_kwargs = {
         'project': project,
@@ -153,6 +154,7 @@ def _init_wandb(training_params: dict, model_params: dict, n_ensemble: int):
         'name': f'{run_id}-w{width}-g{group_id}',
         'group': run_id,
         'config': {
+            'dataset': dataset,
             'width': width,
             'group_id': group_id,
             'ensemble_size': n_ensemble,
@@ -172,9 +174,14 @@ def _init_wandb(training_params: dict, model_params: dict, n_ensemble: int):
             return None
 
 
-def initialize(keys, N: int, num_ensemble_subsets: int, mup, param_dtype):
-    model = ResNet18(num_classes=NUM_CLASSES, num_filters=N, param_dtype=param_dtype)
-    dummy_input = jnp.zeros((1,) + IMAGENET_SHAPE, dtype=param_dtype)
+def initialize(keys, N: int, num_ensemble_subsets: int, mup, param_dtype, dataset_spec):
+    model = ResNet18(
+        num_classes=dataset_spec.num_classes,
+        num_filters=N,
+        param_dtype=param_dtype,
+        stem_type=dataset_spec.stem_type,
+    )
+    dummy_input = jnp.zeros((1,) + dataset_spec.input_shape, dtype=param_dtype)
 
     width_mults = mup._width_mults
     readout_zero_init = mup.readout_zero_init
@@ -207,6 +214,7 @@ def initialize(keys, N: int, num_ensemble_subsets: int, mup, param_dtype):
 def train(
     vars_0: chex.ArrayTree,
     N: int,
+    dataset_spec,
     optimizer: optax.GradientTransformation,
     train_loader,
     val_data,
@@ -220,14 +228,6 @@ def train(
     model_params: dict,
     learning_rate_fn,
 ):
-    tranche_size = train_loader.batch_size
-    if tranche_size % batch_size != 0:
-        raise ValueError("'microbatch_size' must divide 'minibatch_size'.")
-    num_batches = tranche_size // batch_size
-
-    if num_batches <= 0:
-        raise ValueError('microbatch_size must be <= minibatch_size.')
-
     class TrainState(train_state.TrainState):
         batch_stats: chex.ArrayTree
         mup: chex.ArrayTree
@@ -255,7 +255,12 @@ def train(
 
         return jax.lax.map(partial_subset_update, state)
 
-    model = ResNet18(num_classes=NUM_CLASSES, num_filters=N, param_dtype=data_dtype)
+    model = ResNet18(
+        num_classes=dataset_spec.num_classes,
+        num_filters=N,
+        param_dtype=data_dtype,
+        stem_type=dataset_spec.stem_type,
+    )
 
     def create_train_state(params, tx, bs, mup):
         return TrainState.create(apply_fn=model.apply, params=params, tx=tx, batch_stats=bs, mup=mup)
@@ -347,9 +352,11 @@ def train(
     while images_seen < target_images_seen:
         for tranche in train_loader:
             x_host, y_host = tranche_to_host(tranche)
-            for micro_idx in range(num_batches):
-                start_idx = micro_idx * batch_size
-                end_idx = start_idx + batch_size
+            tranche_size = int(y_host.shape[0])
+            if tranche_size <= 0:
+                continue
+            for start_idx in range(0, tranche_size, batch_size):
+                end_idx = min(start_idx + batch_size, tranche_size)
                 x_mb = jnp.array(x_host[start_idx:end_idx], dtype=data_dtype)
                 y_mb = jnp.array(y_host[start_idx:end_idx])
                 state = update(state, x_mb, y_mb)
@@ -479,6 +486,7 @@ def train(
 
 
 def apply(key, train_loader, val_data, devices, model_params, training_params):
+    del devices
     n_ensemble = int(model_params['ensemble_size'])
     if n_ensemble <= 0:
         raise ValueError('ensemble_size must be > 0')
@@ -497,19 +505,32 @@ def apply(key, train_loader, val_data, devices, model_params, training_params):
     except TypeError as e:
         raise ValueError('model_params.dtype must be a valid jax dtype') from e
 
+    dataset = str(training_params.get('dataset', 'imagenet'))
+    dataset_spec = get_dataset_spec(dataset)
+
     mup = Mup()
 
-    init_input = jnp.zeros((1,) + IMAGENET_SHAPE, dtype=dtype)
-    base_model = ResNet18(num_classes=NUM_CLASSES, num_filters=BASE_N, param_dtype=dtype)
+    init_input = jnp.zeros((1,) + dataset_spec.input_shape, dtype=dtype)
+    base_model = ResNet18(
+        num_classes=dataset_spec.num_classes,
+        num_filters=BASE_N,
+        param_dtype=dtype,
+        stem_type=dataset_spec.stem_type,
+    )
     vars_ = base_model.init(jax.random.PRNGKey(0), init_input)
     mup.set_base_shapes({'params': vars_['params']})
 
-    target_model = ResNet18(num_classes=NUM_CLASSES, num_filters=N, param_dtype=dtype)
+    target_model = ResNet18(
+        num_classes=dataset_spec.num_classes,
+        num_filters=N,
+        param_dtype=dtype,
+        stem_type=dataset_spec.stem_type,
+    )
     vars_target = target_model.init(jax.random.PRNGKey(0), init_input)
     mup.set_target_shapes({'params': vars_target['params']})
 
     init_keys = split(key, num=n_ensemble)
-    vars_0 = initialize(init_keys, N, ensemble_subsets, mup, dtype)
+    vars_0 = initialize(init_keys, N, ensemble_subsets, mup, dtype, dataset_spec)
     info('Initialized parameters.')
 
     eta_0 = float(training_params['eta_0'])
@@ -546,6 +567,7 @@ def apply(key, train_loader, val_data, devices, model_params, training_params):
     _ = train(
         vars_0=vars_0,
         N=N,
+        dataset_spec=dataset_spec,
         optimizer=optimizer,
         train_loader=train_loader,
         val_data=val_data,

@@ -2,6 +2,7 @@ import importlib
 
 _MODULE_PATHS = {
     ('cifar10', 'resnet18'): 'src.experiment.cifar10_resnet',
+    ('cifar5m', 'resnet18'): 'src.experiment.cifar5m_resnet',
     ('imagenet', 'resnet18'): 'src.experiment.imagenet_resnet',
 }
 
