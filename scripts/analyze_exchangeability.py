@@ -25,6 +25,7 @@ from tqdm.auto import tqdm
 from torchvision.datasets import ImageFolder, ImageNet
 import torchvision.transforms as transforms
 
+from src.experiment.dataset.cifar5m import build_probe_subset
 from src.experiment.exchangeability_utils import (
     build_member_ids,
     cosine_similarity_matrix,
@@ -36,7 +37,7 @@ from src.experiment.exchangeability_utils import (
     shuffled_similarity_values,
     two_sided_sigma_from_p,
 )
-from src.run.constants import IMAGENET_FOLDER
+from src.run.constants import CIFAR5M_FOLDER, IMAGENET_FOLDER
 
 
 STATE_PATTERN = re.compile(r'^state_(\d+)')
@@ -49,6 +50,7 @@ EMPIRICAL_FIELDNAMES = [
 ]
 
 ANALYSIS_FIELDNAMES = [
+    'dataset',
     'width',
     'source_run_id',
     'images_seen',
@@ -415,6 +417,23 @@ def _load_group_metrics(group_dir: str) -> dict[int, dict]:
     return out
 
 
+def _load_group_metadata(group_dir: str) -> dict:
+    metadata_path = join(group_dir, 'metadata.json')
+    if not os.path.exists(metadata_path):
+        return {}
+    with open(metadata_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
+
+def _infer_dataset_from_group_dirs(group_dirs: list[str]) -> str:
+    for group_dir in group_dirs:
+        metadata = _load_group_metadata(group_dir)
+        dataset = str(metadata.get('dataset', '')).strip()
+        if dataset:
+            return dataset
+    return 'imagenet'
+
+
 
 def _collect_target_steps(group_dirs: list[str]) -> list[int]:
     if not group_dirs:
@@ -525,7 +544,7 @@ def _member_variables_from_state(state_obj):
 
 
 
-def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_batch_size: int):
+def _build_imagenet_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_batch_size: int):
     if IMAGENET_FOLDER is None:
         raise ValueError('IMAGENET_FOLDER must be set in environment/constants for activation analysis.')
 
@@ -559,30 +578,35 @@ def _build_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_bat
     return DataLoader(subset, batch_size=probe_loader_batch_size, shuffle=False, num_workers=0, drop_last=False)
 
 
+def _build_probe_loader(dataset: str, probe_batch_size: int, probe_seed: int, probe_loader_batch_size: int):
+    if dataset == 'cifar5m':
+        if CIFAR5M_FOLDER is None:
+            raise ValueError('CIFAR5M_FOLDER must be set in environment/constants for CIFAR-5M activation analysis.')
+        subset = build_probe_subset(CIFAR5M_FOLDER, probe_batch_size, probe_seed)
+        return DataLoader(
+            subset,
+            batch_size=min(probe_loader_batch_size, probe_batch_size),
+            shuffle=False,
+            num_workers=0,
+            drop_last=False,
+        )
+    return _build_imagenet_probe_loader(probe_batch_size, probe_seed, probe_loader_batch_size)
+
+
 
 @jax.jit
-def _conv_init_pair_grams(member_kernels: jnp.ndarray, batch_x: jnp.ndarray) -> jnp.ndarray:
-    compute_dtype = jnp.result_type(member_kernels.dtype, batch_x.dtype)
-    kernels = jnp.asarray(member_kernels, dtype=compute_dtype)
+def _conv_init_features(kernel: jnp.ndarray, batch_x: jnp.ndarray) -> jnp.ndarray:
+    compute_dtype = jnp.result_type(kernel.dtype, batch_x.dtype)
+    kernel = jnp.asarray(kernel, dtype=compute_dtype)
     x = jnp.asarray(batch_x, dtype=compute_dtype)
-
-    def _member_features(kernel: jnp.ndarray) -> jnp.ndarray:
-        conv_out = jax.lax.conv_general_dilated(
-            lhs=x,
-            rhs=kernel,
-            window_strides=(2, 2),
-            padding=((3, 3), (3, 3)),
-            dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
-        )
-        return jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, kernel.shape[-1]))
-
-    features = jax.vmap(_member_features)(kernels)
-    return jnp.einsum(
-        'mfw,nfz->mnwz',
-        features,
-        features,
-        precision=jax.lax.Precision.HIGHEST,
+    conv_out = jax.lax.conv_general_dilated(
+        lhs=x,
+        rhs=kernel,
+        window_strides=(2, 2),
+        padding=((3, 3), (3, 3)),
+        dimension_numbers=('NHWC', 'HWIO', 'NHWC'),
     )
+    return jnp.reshape(jnp.asarray(conv_out, dtype=jnp.float32), (-1, kernel.shape[-1]))
 
 
 
@@ -618,9 +642,12 @@ def _activation_similarity_matrix(
                 f'does not match requested width {width}.'
             )
         member_kernels.append(jnp.asarray(kernel))
-    kernels_stacked = jnp.stack(member_kernels, axis=0)
 
-    pair_grams = jnp.zeros((num_members, num_members, width, width), dtype=jnp.float32)
+    self_grams = [jnp.zeros((width, width), dtype=jnp.float32) for _ in range(num_members)]
+    cross_grams = {}
+    for e in range(num_members):
+        for f in range(e + 1, num_members):
+            cross_grams[(e, f)] = jnp.zeros((width, width), dtype=jnp.float32)
 
     batch_iter = _progress(
         probe_loader,
@@ -638,8 +665,30 @@ def _activation_similarity_matrix(
             x = jnp.asarray(batch_x[chunk_start:chunk_end])
 
             try:
-                pair_grams = pair_grams + _conv_init_pair_grams(kernels_stacked, x)
-                pair_grams.block_until_ready()
+                member_features = []
+                member_iter = _progress(
+                    member_kernels,
+                    desc=f'{progress_label} members',
+                    total=num_members,
+                    leave=False,
+                )
+                for kernel in member_iter:
+                    member_features.append(_conv_init_features(kernel, x))
+
+                for e in range(num_members):
+                    fe = member_features[e]
+                    self_grams[e] = self_grams[e] + (fe.T @ fe)
+
+                for e in range(num_members):
+                    fe = member_features[e]
+                    for f in range(e + 1, num_members):
+                        ff = member_features[f]
+                        cross_grams[(e, f)] = cross_grams[(e, f)] + (fe.T @ ff)
+
+                for gram in self_grams:
+                    gram.block_until_ready()
+                for gram in cross_grams.values():
+                    gram.block_until_ready()
             except Exception as exc:
                 message = str(exc)
                 is_oom = (
@@ -667,8 +716,8 @@ def _activation_similarity_matrix(
 
             chunk_start = chunk_end
 
-    pair_grams_np = np.asarray(pair_grams, dtype=np.float64)
-    self_grams_np = [pair_grams_np[e, e] for e in range(num_members)]
+    self_grams_np = [np.asarray(g, dtype=np.float64) for g in self_grams]
+    cross_grams_np = {k: np.asarray(v, dtype=np.float64) for k, v in cross_grams.items()}
     norms = [np.sqrt(np.maximum(np.diag(g), 1e-12)) for g in self_grams_np]
 
     total = num_members * width
@@ -683,7 +732,7 @@ def _activation_similarity_matrix(
         for f in range(e + 1, num_members):
             f_start = f * width
             f_end = f_start + width
-            cross = _safe_cos_from_grams(pair_grams_np[e, f], norms[e], norms[f])
+            cross = _safe_cos_from_grams(cross_grams_np[(e, f)], norms[e], norms[f])
             sim[e_start:e_end, f_start:f_end] = cross
             sim[f_start:f_end, e_start:e_end] = cross.T
 
@@ -767,6 +816,7 @@ def _similarity_npz_path(similarity_output_dir: str, width: int, images_seen: in
 
 def _save_similarity_distributions(
     similarity_output_dir: str,
+    dataset: str,
     width: int,
     images_seen: int,
     representation: str,
@@ -779,6 +829,7 @@ def _save_similarity_distributions(
         out_path,
         within_real=np.asarray(within_real, dtype=np.float32),
         across_real=np.asarray(across_real, dtype=np.float32),
+        dataset=np.asarray(dataset),
         width=np.int32(width),
         images_seen=np.int64(images_seen),
         representation=np.asarray(representation),
@@ -816,6 +867,7 @@ def _analysis_rows_for_similarity(
     if similarity_output_dir:
         out_path = _save_similarity_distributions(
             similarity_output_dir=similarity_output_dir,
+            dataset=str(metric_payload.get('dataset', 'imagenet')),
             width=int(metric_payload['width']),
             images_seen=int(metric_payload['images_seen']),
             representation=representation,
@@ -1002,12 +1054,14 @@ def write_rows(rows: list[dict], output_csv: str) -> None:
         writer = csv.DictWriter(f, fieldnames=ANALYSIS_FIELDNAMES)
         writer.writeheader()
         for row in rows:
+            row['dataset'] = str(row.get('dataset', 'imagenet') or 'imagenet')
             writer.writerow(row)
 
 
 
 def _row_identity(row: dict) -> tuple[int, str, int, str, str, int]:
     return (
+        str(row.get('dataset', 'imagenet')),
         int(row['width']),
         str(row.get('source_run_id', '')),
         int(row['images_seen']),
@@ -1019,6 +1073,7 @@ def _row_identity(row: dict) -> tuple[int, str, int, str, str, int]:
 
 def _rep_identity(row: dict) -> tuple[int, str, int, str]:
     return (
+        str(row.get('dataset', 'imagenet')),
         int(row['width']),
         str(row.get('source_run_id', '')),
         int(row['images_seen']),
@@ -1135,6 +1190,22 @@ def _prepare_resume_state(
     if not rows:
         return set(), 0, 'w'
 
+    normalized_rows = []
+    normalized_changed = False
+    for row in rows:
+        dataset = str(row.get('dataset', 'imagenet') or 'imagenet')
+        if row.get('dataset', '') != dataset:
+            normalized_changed = True
+        row['dataset'] = dataset
+        normalized_rows.append(row)
+    rows = normalized_rows
+
+    if normalized_changed:
+        with open(output_csv, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+
     if width_sources:
         filtered_rows = []
         dropped_source_rows = 0
@@ -1236,8 +1307,8 @@ def main() -> None:
             f'No width directories found for run_id="{args.run_id}" under {args.base_save_dir}.'
         )
 
-    probe_loader = _build_probe_loader(args.probe_batch_size, args.probe_seed, args.probe_loader_batch_size)
     rng = np.random.default_rng(args.probe_seed)
+    probe_loaders: dict[str, DataLoader] = {}
 
     out_dir = os.path.dirname(args.output_csv)
     if out_dir:
@@ -1278,6 +1349,16 @@ def main() -> None:
             group_dirs = _list_group_dirs(width_dir)
             if not group_dirs:
                 continue
+            dataset = _infer_dataset_from_group_dirs(group_dirs)
+            probe_loader = probe_loaders.get(dataset)
+            if probe_loader is None:
+                probe_loader = _build_probe_loader(
+                    dataset,
+                    args.probe_batch_size,
+                    args.probe_seed,
+                    args.probe_loader_batch_size,
+                )
+                probe_loaders[dataset] = probe_loader
 
             common_steps = _collect_target_steps(group_dirs)
             metrics_by_step = _aggregate_metrics(group_dirs)
@@ -1289,6 +1370,7 @@ def main() -> None:
             )
             for step in step_iter:
                 metric_payload = {
+                    'dataset': dataset,
                     'width': width,
                     'source_run_id': source_run_id,
                     'images_seen': step,

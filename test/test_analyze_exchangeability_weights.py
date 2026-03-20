@@ -1,8 +1,12 @@
+import jax.numpy as jnp
 import numpy as np
 
+import scripts.analyze_exchangeability as analyze_exchangeability
+from scripts.analyze_exchangeability import _activation_similarity_matrix
 from scripts.analyze_exchangeability import _extract_weights_from_artifacts
 from scripts.analyze_exchangeability import _save_similarity_distributions
 from scripts.analyze_exchangeability import _similarity_npz_path
+from src.experiment.exchangeability_utils import cosine_similarity_matrix
 
 
 def _f32_to_bf16_raw(arr: np.ndarray) -> np.ndarray:
@@ -45,6 +49,7 @@ def test_save_similarity_distributions_writes_compressed_npz(tmp_path):
 
     out_path = _save_similarity_distributions(
         similarity_output_dir=str(similarity_dir),
+        dataset='imagenet',
         width=width,
         images_seen=step,
         representation=representation,
@@ -63,3 +68,78 @@ def test_save_similarity_distributions_writes_compressed_npz(tmp_path):
     assert int(loaded['width']) == width
     assert int(loaded['images_seen']) == step
     assert str(loaded['representation']) == representation
+
+
+def test_activation_similarity_matrix_retries_smaller_chunks_after_oom(monkeypatch, capsys):
+    call_sizes = []
+
+    def fake_conv_init_features(kernel, batch_x):
+        batch_size = int(batch_x.shape[0])
+        call_sizes.append(batch_size)
+        if batch_size > 1:
+            raise ValueError('RESOURCE_EXHAUSTED: synthetic oom')
+
+        base = np.asarray(batch_x, dtype=np.float32).reshape((batch_size, -1))[:, :1]
+        offset = np.asarray(kernel, dtype=np.float32).reshape((-1, kernel.shape[-1])).sum(axis=0, keepdims=True)
+        return jnp.asarray(base + offset, dtype=jnp.float32)
+
+    monkeypatch.setattr(analyze_exchangeability, '_conv_init_features', fake_conv_init_features)
+
+    member_variables = [
+        {'params': {'conv_init': {'kernel': np.asarray([[[[0.0, 1.0]]]], dtype=np.float32)}}},
+        {'params': {'conv_init': {'kernel': np.asarray([[[[1.0, 0.0]]]], dtype=np.float32)}}},
+    ]
+    probe_loader = [
+        (
+            np.asarray(
+                [
+                    [[ [1.0] ]],
+                    [[ [2.0] ]],
+                    [[ [3.0] ]],
+                    [[ [4.0] ]],
+                ],
+                dtype=np.float32,
+            ),
+            None,
+        )
+    ]
+
+    sim = _activation_similarity_matrix(
+        member_variables=member_variables,
+        width=2,
+        probe_loader=probe_loader,
+        activation_chunk_size=0,
+        progress_label='test',
+    )
+
+    expected_features_0 = np.asarray(
+        [
+            [1.0, 2.0],
+            [2.0, 3.0],
+            [3.0, 4.0],
+            [4.0, 5.0],
+        ],
+        dtype=np.float32,
+    )
+    expected_features_1 = np.asarray(
+        [
+            [2.0, 1.0],
+            [3.0, 2.0],
+            [4.0, 3.0],
+            [5.0, 4.0],
+        ],
+        dtype=np.float32,
+    )
+    expected = cosine_similarity_matrix(
+        np.concatenate([expected_features_0.T, expected_features_1.T], axis=0),
+        np.concatenate([expected_features_0.T, expected_features_1.T], axis=0),
+    )
+
+    assert 4 in call_sizes
+    assert 2 in call_sizes
+    assert call_sizes.count(1) >= 4
+    assert np.allclose(sim, expected)
+
+    captured = capsys.readouterr()
+    assert 'activation OOM at chunk size 4; retrying with chunk size 2' in captured.out
+    assert 'activation OOM at chunk size 2; retrying with chunk size 1' in captured.out
