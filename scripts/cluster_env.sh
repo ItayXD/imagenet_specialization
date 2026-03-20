@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -euo pipefail
+# set -euo pipefail
 
 if [[ -f "${HOME}/.secrets" ]]; then
   # shellcheck disable=SC1090
@@ -8,6 +8,7 @@ fi
 
 export EXCHANGEABILITY_ROOT="${EXCHANGEABILITY_ROOT:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie}"
 export IMAGENET_FOLDER="${IMAGENET_FOLDER:-${EXCHANGEABILITY_ROOT}/imagenet}"
+export CIFAR5M_FOLDER="${CIFAR5M_FOLDER:-${EXCHANGEABILITY_ROOT}/cifar5m}"
 export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${EXCHANGEABILITY_ROOT}/exchangeability_outputs}"
 export REMOTE_RESULTS_FOLDER="${REMOTE_RESULTS_FOLDER:-${EXCHANGEABILITY_ROOT}}"
 export XDG_CACHE_HOME="${XDG_CACHE_HOME:-${EXCHANGEABILITY_ROOT}/.cache}"
