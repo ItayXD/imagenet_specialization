@@ -162,6 +162,11 @@ def parse_args() -> argparse.Namespace:
 def _resolve_shuffle_stats_workers(requested_workers: int) -> int:
     if requested_workers > 0:
         return requested_workers
+    slurm_cpus_per_task = os.environ.get('SLURM_CPUS_PER_TASK', '').strip()
+    if slurm_cpus_per_task:
+        match = re.search(r'\d+', slurm_cpus_per_task)
+        if match is not None:
+            return max(1, int(match.group()) - 1)
     cpu_count = os.cpu_count() or 1
     return max(1, cpu_count - 1)
 
@@ -623,6 +628,8 @@ def _activation_similarity_matrix(
     probe_loader,
     activation_chunk_size: int = 0,
     progress_label: str = '',
+    activation_chunk_size_cache: dict[tuple[str, int, int], int] | None = None,
+    activation_chunk_cache_key: tuple[str, int, int] | None = None,
 ) -> np.ndarray:
     num_members = len(member_variables)
     if num_members == 0:
@@ -655,6 +662,14 @@ def _activation_similarity_matrix(
         leave=False,
     )
     adaptive_chunk_size = activation_chunk_size if activation_chunk_size > 0 else None
+    if (
+        adaptive_chunk_size is None
+        and activation_chunk_size_cache is not None
+        and activation_chunk_cache_key is not None
+        and activation_chunk_cache_key in activation_chunk_size_cache
+    ):
+        adaptive_chunk_size = activation_chunk_size_cache[activation_chunk_cache_key]
+        print(f'{progress_label} reusing cached activation chunk size {adaptive_chunk_size}')
     for batch in batch_iter:
         batch_x, _ = batch
         batch_size = int(batch_x.shape[0])
@@ -689,6 +704,9 @@ def _activation_similarity_matrix(
                     gram.block_until_ready()
                 for gram in cross_grams.values():
                     gram.block_until_ready()
+                if activation_chunk_size_cache is not None and activation_chunk_cache_key is not None:
+                    cached_chunk_size = chunk_size if adaptive_chunk_size is None else adaptive_chunk_size
+                    activation_chunk_size_cache[activation_chunk_cache_key] = int(cached_chunk_size)
             except Exception as exc:
                 message = str(exc)
                 is_oom = (
@@ -1309,6 +1327,7 @@ def main() -> None:
 
     rng = np.random.default_rng(args.probe_seed)
     probe_loaders: dict[str, DataLoader] = {}
+    activation_chunk_size_cache: dict[tuple[str, int, int], int] = {}
 
     out_dir = os.path.dirname(args.output_csv)
     if out_dir:
@@ -1448,12 +1467,15 @@ def main() -> None:
                     print(f'Starting width={width} step={step} rep=activations')
                     member_states = _collect_member_states(group_dirs, step, progress_label=f'w{width} p{step}')
                     t2 = time.time()
+                    chunk_cache_key = (dataset, width, len(member_states))
                     act_sim = _activation_similarity_matrix(
                         member_states,
                         width,
                         probe_loader,
                         activation_chunk_size=args.activation_chunk_size,
                         progress_label=f'w{width} p{step}',
+                        activation_chunk_size_cache=activation_chunk_size_cache,
+                        activation_chunk_cache_key=chunk_cache_key,
                     )
                     activation_rows = _analysis_rows_for_similarity(
                         similarity_matrix=act_sim,

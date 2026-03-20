@@ -143,3 +143,78 @@ def test_activation_similarity_matrix_retries_smaller_chunks_after_oom(monkeypat
     captured = capsys.readouterr()
     assert 'activation OOM at chunk size 4; retrying with chunk size 2' in captured.out
     assert 'activation OOM at chunk size 2; retrying with chunk size 1' in captured.out
+
+
+def test_activation_similarity_matrix_reuses_cached_chunk_size(monkeypatch, capsys):
+    call_sizes = []
+
+    def fake_conv_init_features(kernel, batch_x):
+        batch_size = int(batch_x.shape[0])
+        call_sizes.append(batch_size)
+        if batch_size > 2:
+            raise ValueError('RESOURCE_EXHAUSTED: synthetic oom')
+
+        base = np.asarray(batch_x, dtype=np.float32).reshape((batch_size, -1))[:, :1]
+        offset = np.asarray(kernel, dtype=np.float32).reshape((-1, kernel.shape[-1])).sum(axis=0, keepdims=True)
+        return jnp.asarray(base + offset, dtype=jnp.float32)
+
+    monkeypatch.setattr(analyze_exchangeability, '_conv_init_features', fake_conv_init_features)
+
+    member_variables = [
+        {'params': {'conv_init': {'kernel': np.asarray([[[[0.0, 1.0]]]], dtype=np.float32)}}},
+        {'params': {'conv_init': {'kernel': np.asarray([[[[1.0, 0.0]]]], dtype=np.float32)}}},
+    ]
+    probe_loader = [
+        (
+            np.asarray(
+                [
+                    [[[1.0]]],
+                    [[[2.0]]],
+                    [[[3.0]]],
+                    [[[4.0]]],
+                ],
+                dtype=np.float32,
+            ),
+            None,
+        )
+    ]
+    chunk_cache = {}
+    cache_key = ('imagenet', 2, 2)
+
+    _activation_similarity_matrix(
+        member_variables=member_variables,
+        width=2,
+        probe_loader=probe_loader,
+        activation_chunk_size=0,
+        progress_label='test',
+        activation_chunk_size_cache=chunk_cache,
+        activation_chunk_cache_key=cache_key,
+    )
+
+    assert 4 in call_sizes
+    assert chunk_cache[cache_key] == 2
+
+    call_sizes.clear()
+    _activation_similarity_matrix(
+        member_variables=member_variables,
+        width=2,
+        probe_loader=probe_loader,
+        activation_chunk_size=0,
+        progress_label='test',
+        activation_chunk_size_cache=chunk_cache,
+        activation_chunk_cache_key=cache_key,
+    )
+
+    assert 4 not in call_sizes
+    assert call_sizes.count(2) >= 2
+
+    captured = capsys.readouterr()
+    assert 'test reusing cached activation chunk size 2' in captured.out
+
+
+def test_resolve_shuffle_stats_workers_respects_slurm_cpu_allocation(monkeypatch):
+    monkeypatch.setenv('SLURM_CPUS_PER_TASK', '16')
+    monkeypatch.setattr(analyze_exchangeability.os, 'cpu_count', lambda: 64)
+
+    assert analyze_exchangeability._resolve_shuffle_stats_workers(0) == 15
+    assert analyze_exchangeability._resolve_shuffle_stats_workers(7) == 7
