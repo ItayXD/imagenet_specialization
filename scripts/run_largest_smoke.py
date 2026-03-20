@@ -22,6 +22,10 @@ THROUGHPUT_RE = re.compile(
 TIMING_METHODS = ('ema_plus_overhead', 'ema', 'train_loop', 'task', 'wall')
 
 
+def _status(message: str) -> None:
+    print(message, flush=True)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Run largest-setting smoke test for memory/training progression.')
     parser.add_argument('--experiment', default='exchangeability_w512_g0', help='Hydra experiment config name')
@@ -135,6 +139,31 @@ def _choose_timing_source(
     raise RuntimeError('No timing method estimates were available.')
 
 
+def _build_main_cmd(
+    experiment: str,
+    smoke_run_id: str,
+    max_tranches: int,
+    target_images_seen: int,
+    minibatch_size: int,
+    microbatch_size: int,
+    num_workers: int,
+    smoke_base_dir: str,
+) -> list[str]:
+    return [
+        sys.executable,
+        '-u',
+        'main.py',
+        f'experiment={experiment}',
+        f'hyperparams.task_list.0.training_params.run_id={smoke_run_id}',
+        f'hyperparams.task_list.0.training_params.max_tranches={max_tranches}',
+        f'hyperparams.task_list.0.training_params.target_images_seen={target_images_seen}',
+        f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
+        f'hyperparams.task_list.0.training_params.microbatch_size={microbatch_size}',
+        f'hyperparams.task_list.0.training_params.num_workers={num_workers}',
+        f'base_dir={smoke_base_dir}',
+    ]
+
+
 def main() -> None:
     args = parse_args()
     cfg = _load_experiment_cfg(args.experiment)
@@ -159,27 +188,25 @@ def main() -> None:
     base_run_id = str(training_cfg.run_id)
     smoke_run_id = f'{base_run_id}_smoke_{stamp}_{os.getpid()}_{uuid.uuid4().hex[:8]}'
 
-    cmd = [
-        sys.executable,
-        'main.py',
-        f'experiment={args.experiment}',
-        f'hyperparams.task_list.0.training_params.run_id={smoke_run_id}',
-        f'hyperparams.task_list.0.training_params.max_tranches={args.max_tranches}',
-        f'hyperparams.task_list.0.training_params.target_images_seen={args.target_images_seen}',
-        f'hyperparams.task_list.0.training_params.minibatch_size={minibatch_size}',
-        f'hyperparams.task_list.0.training_params.microbatch_size={microbatch_size}',
-        f'hyperparams.task_list.0.training_params.num_workers={num_workers}',
-        f'base_dir={smoke_base_dir}',
-    ]
+    cmd = _build_main_cmd(
+        experiment=args.experiment,
+        smoke_run_id=smoke_run_id,
+        max_tranches=args.max_tranches,
+        target_images_seen=args.target_images_seen,
+        minibatch_size=minibatch_size,
+        microbatch_size=microbatch_size,
+        num_workers=num_workers,
+        smoke_base_dir=smoke_base_dir,
+    )
 
-    print('Running smoke test command:')
-    print(' '.join(cmd))
-    print(f'Using smoke base_dir: {smoke_base_dir}')
-    print(f'Using smoke run_id: {smoke_run_id}')
-    print(f'Using smoke ensemble_subsets: {ensemble_subsets}')
-    print(f'Using smoke minibatch_size: {minibatch_size}')
-    print(f'Using smoke microbatch_size: {microbatch_size}')
-    print(f'Using smoke num_workers: {num_workers}')
+    _status('Running smoke test command:')
+    _status(' '.join(cmd))
+    _status(f'Using smoke base_dir: {smoke_base_dir}')
+    _status(f'Using smoke run_id: {smoke_run_id}')
+    _status(f'Using smoke ensemble_subsets: {ensemble_subsets}')
+    _status(f'Using smoke minibatch_size: {minibatch_size}')
+    _status(f'Using smoke microbatch_size: {microbatch_size}')
+    _status(f'Using smoke num_workers: {num_workers}')
 
     task_elapsed_s: float | None = None
     train_loop_elapsed_s: float | None = None
@@ -198,7 +225,7 @@ def main() -> None:
     ) as proc:
         assert proc.stdout is not None
         for line in proc.stdout:
-            print(line, end='')
+            print(line, end='', flush=True)
 
             m = TRAIN_LOOP_RE.search(line)
             if m:
@@ -222,7 +249,7 @@ def main() -> None:
     elapsed_s = time.time() - start
 
     if smoke_images_seen <= 0:
-        print('Could not compute extrapolated time; smoke_images_seen <= 0.')
+        _status('Could not compute extrapolated time; smoke_images_seen <= 0.')
         return
 
     method_estimates: dict[str, dict[str, float | str]] = {}
@@ -275,22 +302,22 @@ def main() -> None:
     )
     hh, mm, ss = _hms_from_hours(est_with_safety_h)
 
-    print('\n--- Smoke Timing Summary ---')
-    print(f'smoke_tranches={args.max_tranches}')
-    print(f'smoke_images_seen={smoke_images_seen}')
-    print(f'elapsed_seconds={elapsed_s:.2f}')
+    _status('\n--- Smoke Timing Summary ---')
+    _status(f'smoke_tranches={args.max_tranches}')
+    _status(f'smoke_images_seen={smoke_images_seen}')
+    _status(f'elapsed_seconds={elapsed_s:.2f}')
     if task_elapsed_s is not None:
-        print(f'task_elapsed_seconds={task_elapsed_s:.2f}')
+        _status(f'task_elapsed_seconds={task_elapsed_s:.2f}')
     if train_loop_elapsed_s is not None:
-        print(f'train_loop_elapsed_seconds={train_loop_elapsed_s:.2f}')
+        _status(f'train_loop_elapsed_seconds={train_loop_elapsed_s:.2f}')
     if last_ema_ips is not None:
-        print(f'last_throughput_ips_inst={last_inst_ips:.2f}')
-        print(f'last_throughput_ips_ema={last_ema_ips:.2f}')
-        print(
+        _status(f'last_throughput_ips_inst={last_inst_ips:.2f}')
+        _status(f'last_throughput_ips_ema={last_ema_ips:.2f}')
+        _status(
             f'last_throughput_point=tranches:{last_throughput_tranches},'
             f'images_seen:{last_throughput_images_seen}'
         )
-    print('all_timing_methods:')
+    _status('all_timing_methods:')
     for method_name in TIMING_METHODS:
         est = method_estimates.get(method_name)
         if est is None:
@@ -300,28 +327,28 @@ def main() -> None:
         method_sbatch = str(est['suggested_sbatch_time'])
         method_basis_s = est.get('basis_elapsed_seconds')
         if method_basis_s is None:
-            print(
+            _status(
                 f'  method={method_name} ips={method_ips:.2f} '
                 f'est_hours_with_safety={method_hours:.2f} suggested={method_sbatch}'
             )
         else:
-            print(
+            _status(
                 f'  method={method_name} ips={method_ips:.2f} '
                 f'basis_elapsed_seconds={float(method_basis_s):.2f} '
                 f'est_hours_with_safety={method_hours:.2f} suggested={method_sbatch}'
             )
-    print(f'estimate_timing_source={timing_source}')
+    _status(f'estimate_timing_source={timing_source}')
     if timing_source in ('ema', 'ema_plus_overhead'):
-        print(f'estimate_basis_images_per_second={images_per_s:.2f}')
+        _status(f'estimate_basis_images_per_second={images_per_s:.2f}')
         overhead_s = selected_estimate.get('basis_overhead_seconds')
         if overhead_s is not None:
-            print(f'estimate_basis_overhead_seconds={float(overhead_s):.2f}')
+            _status(f'estimate_basis_overhead_seconds={float(overhead_s):.2f}')
     else:
-        print(f'estimate_basis_elapsed_seconds={basis_seconds:.2f}')
-    print(f'images_per_second={images_per_s:.2f}')
-    print(f'estimated_full_hours={est_full_h:.2f}')
-    print(f'estimated_full_hours_with_safety={est_with_safety_h:.2f} (safety_factor={args.safety_factor})')
-    print(f'suggested_sbatch_time={hh:02d}:{mm:02d}:{ss:02d}')
+        _status(f'estimate_basis_elapsed_seconds={basis_seconds:.2f}')
+    _status(f'images_per_second={images_per_s:.2f}')
+    _status(f'estimated_full_hours={est_full_h:.2f}')
+    _status(f'estimated_full_hours_with_safety={est_with_safety_h:.2f} (safety_factor={args.safety_factor})')
+    _status(f'suggested_sbatch_time={hh:02d}:{mm:02d}:{ss:02d}')
 
     if args.summary_json:
         summary_dir = os.path.dirname(args.summary_json)
@@ -374,7 +401,7 @@ def main() -> None:
                 summary[f'{method_name}_basis_overhead_seconds'] = est.get('basis_overhead_seconds')
         with open(args.summary_json, 'w', encoding='utf-8') as f:
             json.dump(summary, f, indent=2, sort_keys=True)
-        print(f'Wrote timing summary JSON: {args.summary_json}')
+        _status(f'Wrote timing summary JSON: {args.summary_json}')
 
 
 if __name__ == '__main__':

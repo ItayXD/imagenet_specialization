@@ -50,6 +50,7 @@ def main() -> None:
 
     cmd = [
         sys.executable,
+        '-u',
         'scripts/run_largest_smoke.py',
         '--experiment',
         experiment_name,
@@ -72,8 +73,8 @@ def main() -> None:
     if args.microbatch_size > 0:
         cmd.extend(['--microbatch-size', str(args.microbatch_size)])
 
-    print(f'Running timing pilot for manifest row {args.index}: {experiment_name}')
-    print('Command:', ' '.join(cmd))
+    print(f'Running timing pilot for manifest row {args.index}: {experiment_name}', flush=True)
+    print('Command:', ' '.join(cmd), flush=True)
     subprocess.run(cmd, check=True)
 
 

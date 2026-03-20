@@ -5,7 +5,7 @@
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48G
-#SBATCH --time=02:00:00
+#SBATCH --time=00:30:00
 
 set -euo pipefail
 
@@ -37,6 +37,8 @@ if [[ ! -x "${PY_BIN}" ]]; then
   exit 2
 fi
 
+export PYTHONUNBUFFERED=1
+
 echo "Running largest smoke pytest harness on job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 echo "Using smoke minibatch/microbatch/workers overrides: ${LARGEST_SMOKE_MINIBATCH_SIZE:-<config>}/${LARGEST_SMOKE_MICROBATCH_SIZE:-<config>}/${LARGEST_SMOKE_NUM_WORKERS:-<config>}"
@@ -51,4 +53,4 @@ LARGEST_SMOKE_MINIBATCH_SIZE="${LARGEST_SMOKE_MINIBATCH_SIZE:-}" \
 LARGEST_SMOKE_MICROBATCH_SIZE="${LARGEST_SMOKE_MICROBATCH_SIZE:-}" \
 LARGEST_SMOKE_NUM_WORKERS="${LARGEST_SMOKE_NUM_WORKERS:-}" \
 LARGEST_SMOKE_TIMING_SOURCE="${LARGEST_SMOKE_TIMING_SOURCE:-}" \
-"${PY_BIN}" -m pytest -q test/test_largest_smoke_harness.py
+"${PY_BIN}" -u -m pytest -q test/test_largest_smoke_harness.py

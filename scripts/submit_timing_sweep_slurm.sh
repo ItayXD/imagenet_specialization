@@ -77,6 +77,8 @@ if [[ ! -x "${PY_BIN}" ]]; then
   exit 2
 fi
 
+export PYTHONUNBUFFERED=1
+
 echo "Running timing sweep row ${TASK_ID}/${TOTAL_ROWS} on job ${SLURM_ARRAY_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 echo "Using max_tranches=${MAX_TRANCHES}, target_images_seen=${TARGET_IMAGES_SEEN}, safety_factor=${SAFETY_FACTOR}, num_workers_override=${NUM_WORKERS:-<config>}"
@@ -89,7 +91,7 @@ fi
 
 cd "${ROOT_DIR}"
 CMD=(
-  "${PY_BIN}" scripts/run_timing_manifest_row.py
+  "${PY_BIN}" -u scripts/run_timing_manifest_row.py
   --manifest "${MANIFEST_PATH}"
   --index "${TASK_ID}"
   --max-tranches "${MAX_TRANCHES}"
