@@ -9,7 +9,7 @@ from os import mkdir
 
 from omegaconf import OmegaConf
 
-from torch.utils.data import DataLoader
+from src.run.dataloader import make_dataloader
 
 class OnlineTaskRunner:
     def __init__(self, PD: OnlinePreprocessDevice) -> None:
@@ -62,7 +62,7 @@ class OnlineTaskRunner:
         minibatch_size = tp['minibatch_size']
         num_workers = tp['num_workers']
         use_persistent_workers = num_workers > 0
-        train_loader = DataLoader(
+        train_loader = make_dataloader(
             train_data,
             minibatch_size,
             num_workers=num_workers,

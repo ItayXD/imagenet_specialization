@@ -4,7 +4,6 @@ from typing import Mapping
 import jax
 import jax.numpy as jnp
 
-from torch.utils.data import DataLoader
 import torch as ch
 
 # from src.run.save_helpers import create_tmp_folder
@@ -12,6 +11,7 @@ from os.path import join
 from os import makedirs
 
 from src.run import constants
+from src.run.dataloader import make_dataloader
 
 from omegaconf import OmegaConf
 
@@ -33,9 +33,14 @@ class OnlinePreprocessDevice(ABC):
         len_vd = len(vd)
         assert len_vd < 5_000
 
-        NUM_WORKERS = 1
-        # vd_batch_size = len_vd // NUM_WORKERS
-        vd_loader = DataLoader(vd, num_workers=NUM_WORKERS, batch_size=len_vd, shuffle=False, drop_last=False)
+        num_workers = 0
+        vd_loader = make_dataloader(
+            vd,
+            num_workers=num_workers,
+            batch_size=len_vd,
+            shuffle=False,
+            drop_last=False,
+        )
 
         self.val_data = next(iter(vd_loader))
 
@@ -70,4 +75,3 @@ class OnlinePreprocessDevice(ABC):
             logging.error('Could not write data config file: %s', e)
             raise
         
-
