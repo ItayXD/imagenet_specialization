@@ -4,6 +4,7 @@ import bisect
 import json
 import os
 from dataclasses import dataclass
+from logging import getLogger
 from typing import Mapping
 
 import jax.random as jr
@@ -21,6 +22,8 @@ LABEL_KEY_CANDIDATES = ('labels', 'Y', 'y', 'targets')
 
 _CIFAR_MEAN = (0.4914, 0.4822, 0.4465)
 _CIFAR_STD = (0.2470, 0.2435, 0.2616)
+
+log = getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -159,7 +162,7 @@ class Cifar5mShardDataset(Dataset):
         self.explicit_indices = explicit_indices
         self.shards = [ShardInfo(**row) for row in manifest['shards']]
         self._cumulative_ends = [int(shard.global_end) for shard in self.shards]
-        self._npz_cache: dict[int, np.lib.npyio.NpzFile] = {}
+        self._array_cache: dict[int, tuple[np.ndarray, np.ndarray]] = {}
 
     def __len__(self) -> int:
         if self.explicit_indices is not None:
@@ -173,21 +176,26 @@ class Cifar5mShardDataset(Dataset):
             return int(self.explicit_indices[index])
         return self.start + index
 
-    def _open_shard(self, shard_idx: int) -> np.lib.npyio.NpzFile:
-        npz = self._npz_cache.get(shard_idx)
-        if npz is None:
-            npz = np.load(self.shards[shard_idx].path, mmap_mode='r')
-            self._npz_cache[shard_idx] = npz
-        return npz
+    def _load_shard_arrays(self, shard_idx: int) -> tuple[np.ndarray, np.ndarray]:
+        arrays = self._array_cache.get(shard_idx)
+        if arrays is None:
+            shard = self.shards[shard_idx]
+            log.info(f'Caching CIFAR-5M shard {shard_idx} into memory from {shard.path}.')
+            with np.load(shard.path, mmap_mode='r') as npz:
+                images = np.asarray(npz[shard.image_key])
+                labels = np.asarray(npz[shard.label_key])
+            arrays = (images, labels)
+            self._array_cache[shard_idx] = arrays
+        return arrays
 
     def __getitem__(self, index: int):
         global_index = self._resolve_global_index(index)
         shard_idx = bisect.bisect_right(self._cumulative_ends, global_index)
         shard = self.shards[shard_idx]
         local_index = global_index - int(shard.global_start)
-        npz = self._open_shard(shard_idx)
-        image = np.asarray(npz[shard.image_key][local_index], dtype=np.uint8)
-        label = int(np.asarray(npz[shard.label_key][local_index]).reshape(()))
+        images, labels = self._load_shard_arrays(shard_idx)
+        image = np.asarray(images[local_index], dtype=np.uint8)
+        label = int(np.asarray(labels[local_index]).reshape(()))
         image_obj = Image.fromarray(image)
         if self.transform is not None:
             image_out = self.transform(image_obj)

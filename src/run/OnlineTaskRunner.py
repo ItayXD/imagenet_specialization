@@ -15,6 +15,16 @@ class OnlineTaskRunner:
     def __init__(self, PD: OnlinePreprocessDevice) -> None:
         self.preprocess_device = PD
 
+    @staticmethod
+    def _resolve_num_workers(dataset: str, requested_num_workers: int) -> int:
+        num_workers = int(requested_num_workers)
+        if dataset == 'cifar5m' and num_workers > 0:
+            logging.info(
+                f'Overriding CIFAR-5M num_workers from {num_workers} to 0 to avoid duplicating shard caches across workers.'
+            )
+            return 0
+        return num_workers
+
     def run_serial_task(self, task: Task):
         raise NotImplementedError
 
@@ -60,7 +70,7 @@ class OnlineTaskRunner:
         val_data = self.preprocess_device.val_data
         
         minibatch_size = tp['minibatch_size']
-        num_workers = tp['num_workers']
+        num_workers = self._resolve_num_workers(tp['dataset'], tp['num_workers'])
         use_persistent_workers = num_workers > 0
         train_loader = make_dataloader(
             train_data,
