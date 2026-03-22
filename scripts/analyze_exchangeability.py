@@ -22,10 +22,7 @@ import numpy as np
 from flax.training import checkpoints
 from torch.utils.data import DataLoader, Subset
 from tqdm.auto import tqdm
-from torchvision.datasets import ImageFolder, ImageNet
-import torchvision.transforms as transforms
 
-from src.experiment.dataset.cifar5m import build_probe_subset
 from src.experiment.exchangeability_utils import (
     build_member_ids,
     cosine_similarity_matrix,
@@ -549,10 +546,34 @@ def _member_variables_from_state(state_obj):
 
 
 
+def _load_imagenet_torchvision():
+    try:
+        from torchvision.datasets import ImageFolder, ImageNet
+        import torchvision.transforms as transforms
+    except Exception as exc:
+        raise RuntimeError(
+            'Importing torchvision failed while building the ImageNet probe loader. '
+            'This path requires a working torchvision install and its compatible dependencies.'
+        ) from exc
+    return ImageFolder, ImageNet, transforms
+
+
+def _load_cifar5m_probe_subset_builder():
+    try:
+        from src.experiment.dataset.cifar5m import build_probe_subset
+    except Exception as exc:
+        raise RuntimeError(
+            'Importing the CIFAR-5M probe loader failed. '
+            'This path requires the local dataset utilities and their torchvision dependencies.'
+        ) from exc
+    return build_probe_subset
+
+
 def _build_imagenet_probe_loader(probe_batch_size: int, probe_seed: int, probe_loader_batch_size: int):
     if IMAGENET_FOLDER is None:
         raise ValueError('IMAGENET_FOLDER must be set in environment/constants for activation analysis.')
 
+    ImageFolder, ImageNet, transforms = _load_imagenet_torchvision()
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
     channels_last_transform = transforms.Lambda(lambda x: x.permute(1, 2, 0))
     val_transform = transforms.Compose(
@@ -587,6 +608,7 @@ def _build_probe_loader(dataset: str, probe_batch_size: int, probe_seed: int, pr
     if dataset == 'cifar5m':
         if CIFAR5M_FOLDER is None:
             raise ValueError('CIFAR5M_FOLDER must be set in environment/constants for CIFAR-5M activation analysis.')
+        build_probe_subset = _load_cifar5m_probe_subset_builder()
         subset = build_probe_subset(CIFAR5M_FOLDER, probe_batch_size, probe_seed)
         return DataLoader(
             subset,
