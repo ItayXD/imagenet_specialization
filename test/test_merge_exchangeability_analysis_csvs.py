@@ -55,3 +55,30 @@ def test_merge_rows_handles_legacy_blank_shuffle_id(tmp_path):
     assert len(merged) == 1
     assert merged[0]['dataset'] == 'imagenet'
     assert merged[0]['shuffle_id'] == '-1'
+
+
+def test_merge_rows_prefers_per_width_rows_over_existing_canonical_output(tmp_path):
+    canonical_row = _base_row()
+    canonical_row['width'] = '32'
+    canonical_row['source_run_id'] = 'exchangeability_job_old'
+    canonical_row['w1_distance'] = '0.111'
+
+    per_width_row = _base_row()
+    per_width_row['width'] = '32'
+    per_width_row['source_run_id'] = 'exchangeability_job_new'
+    per_width_row['w1_distance'] = '0.222'
+
+    canonical_csv = tmp_path / 'exchangeability_metrics.csv'
+    per_width_csv = tmp_path / 'exchangeability_metrics_w32.csv'
+
+    _write_csv(canonical_csv, ANALYSIS_FIELDNAMES, [canonical_row])
+    _write_csv(per_width_csv, ANALYSIS_FIELDNAMES, [per_width_row])
+
+    merged = _merge_rows(
+        [str(canonical_csv), str(per_width_csv)],
+        output_path=str(canonical_csv),
+    )
+
+    assert len(merged) == 1
+    assert merged[0]['source_run_id'] == 'exchangeability_job_new'
+    assert merged[0]['w1_distance'] == '0.222'

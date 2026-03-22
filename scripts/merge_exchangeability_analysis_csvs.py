@@ -65,7 +65,7 @@ def _coerce_int(value: str, *, field: str, default_if_blank: int | None = None) 
         raise ValueError(f'Invalid integer for {field}: {value!r}') from exc
 
 
-def _row_identity(row: dict[str, str]) -> tuple[int, str, int, str, str, int]:
+def _row_identity(row: dict[str, str]) -> tuple[str, int, str, int, str, str, int]:
     return (
         str(row.get('dataset', 'imagenet') or 'imagenet'),
         _coerce_int(row.get('width', ''), field='width'),
@@ -77,15 +77,31 @@ def _row_identity(row: dict[str, str]) -> tuple[int, str, int, str, str, int]:
     )
 
 
-def _row_sort_key(row: dict[str, str]) -> tuple[int, str, int, str, str, int]:
+def _logical_row_identity(row: dict[str, str]) -> tuple[str, int, int, str, str, int]:
+    return (
+        str(row.get('dataset', 'imagenet') or 'imagenet'),
+        _coerce_int(row.get('width', ''), field='width'),
+        _coerce_int(row.get('images_seen', ''), field='images_seen'),
+        str(row['representation']),
+        str(row['analysis_type']),
+        _coerce_int(row.get('shuffle_id', ''), field='shuffle_id', default_if_blank=-1),
+    )
+
+
+def _row_sort_key(row: dict[str, str]) -> tuple[str, int, str, int, str, str, int]:
     return _row_identity(row)
 
 
 def _discover_input_paths(input_globs: list[str]) -> list[str]:
-    expanded: list[str] = []
+    paths: list[str] = []
+    seen: set[str] = set()
     for pattern in input_globs:
-        expanded.extend(glob.glob(pattern))
-    paths = sorted({os.path.abspath(p) for p in expanded if os.path.isfile(p)})
+        for raw_path in sorted(glob.glob(pattern)):
+            path = os.path.abspath(raw_path)
+            if (not os.path.isfile(path)) or path in seen:
+                continue
+            seen.add(path)
+            paths.append(path)
     if not paths:
         raise RuntimeError(
             'No input CSV files found. Pass --inputs-glob with a pattern that matches files.'
@@ -109,17 +125,37 @@ def _read_rows(path: str) -> list[dict[str, str]]:
     return normalized_rows
 
 
-def _merge_rows(input_paths: list[str]) -> list[dict[str, str]]:
-    merged: list[dict[str, str]] = []
-    seen: set[tuple[int, str, int, str, str, int]] = set()
+def _merge_rows(
+    input_paths: list[str],
+    *,
+    output_path: str | None = None,
+) -> list[dict[str, str]]:
+    chosen_rows: dict[tuple[str, int, int, str, str, int], dict[str, str]] = {}
+    chosen_paths: dict[tuple[str, int, int, str, str, int], str] = {}
+    output_abs = os.path.abspath(output_path) if output_path else None
+
     for path in input_paths:
+        path_abs = os.path.abspath(path)
+        path_is_output = output_abs is not None and path_abs == output_abs
         rows = _read_rows(path)
         for row in rows:
-            key = _row_identity(row)
-            if key in seen:
+            logical_key = _logical_row_identity(row)
+            current_row = chosen_rows.get(logical_key)
+            if current_row is None:
+                chosen_rows[logical_key] = row
+                chosen_paths[logical_key] = path_abs
                 continue
-            seen.add(key)
-            merged.append(row)
+
+            if _row_identity(current_row) == _row_identity(row):
+                continue
+
+            current_path = chosen_paths[logical_key]
+            current_is_output = output_abs is not None and current_path == output_abs
+            if current_is_output and (not path_is_output):
+                chosen_rows[logical_key] = row
+                chosen_paths[logical_key] = path_abs
+
+    merged = list(chosen_rows.values())
     merged.sort(key=_row_sort_key)
     return merged
 
@@ -151,7 +187,7 @@ def main() -> None:
     with open(lock_path, 'a+', encoding='utf-8') as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         input_paths = _discover_input_paths(input_globs)
-        merged_rows = _merge_rows(input_paths)
+        merged_rows = _merge_rows(input_paths, output_path=output_path)
         _write_csv_atomic(merged_rows, output_path)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
