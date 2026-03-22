@@ -92,7 +92,11 @@ def _progress(iterable, **kwargs):
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Analyze exchangeability from grouped ensemble checkpoints.')
     parser.add_argument('--base-save-dir', required=True, help='Root save directory (BASE_SAVE_DIR)')
-    parser.add_argument('--run-id', default='exchangeability', help='Run id folder name under base-save-dir')
+    parser.add_argument(
+        '--run-id',
+        default='',
+        help='Optional run id folder name under base-save-dir; leave unset to auto-pick the newest real run(s).',
+    )
     parser.add_argument(
         '--run-id-resolution',
         choices=['exact', 'latest_prefix', 'auto'],
@@ -232,10 +236,40 @@ def _list_prefixed_run_candidates(
     return candidates, ignored_smoke
 
 
+def _list_all_run_candidates(base_save_dir: str) -> tuple[list[tuple[float, str]], int]:
+    candidates: list[tuple[float, str]] = []
+    ignored_smoke = 0
+    for name in os.listdir(base_save_dir):
+        path = join(base_save_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if _is_smoke_run_dir_name(name):
+            ignored_smoke += 1
+            continue
+        if not _is_run_dir(path):
+            continue
+        candidates.append((os.path.getmtime(path), name))
+    return candidates, ignored_smoke
+
+
 
 def _resolve_run_id(base_save_dir: str, run_id: str, resolution_mode: str) -> str:
     if not os.path.isdir(base_save_dir):
         raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
+
+    run_id = str(run_id or '').strip()
+    if not run_id:
+        if resolution_mode == 'exact':
+            raise ValueError('resolution_mode="exact" requires a non-empty run_id.')
+        candidates, ignored_smoke = _list_all_run_candidates(base_save_dir)
+        if ignored_smoke > 0:
+            print(f'Run id resolution: ignoring {ignored_smoke} smoke run directories.')
+        if not candidates:
+            raise FileNotFoundError(f'No run directories found under {base_save_dir}.')
+        candidates.sort(key=lambda x: x[0])
+        resolved = candidates[-1][1]
+        print(f'Run id auto-selection chose newest run "{resolved}".')
+        return resolved
 
     exact_dir = join(base_save_dir, run_id)
     has_exact = os.path.isdir(exact_dir)
@@ -318,12 +352,42 @@ def _resolve_width_dirs(
     if not os.path.isdir(base_save_dir):
         raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
 
+    run_id = str(run_id or '').strip()
+
     requested_set = {int(w) for w in requested_widths} if requested_widths else None
 
     def _filter_requested(width_dirs: dict[int, str]) -> dict[int, str]:
         if requested_set is None:
             return width_dirs
         return {w: d for w, d in width_dirs.items() if w in requested_set}
+
+    if not run_id:
+        if resolution_mode == 'exact':
+            raise ValueError('resolution_mode="exact" requires a non-empty run_id.')
+
+        candidates, ignored_smoke = _list_all_run_candidates(base_save_dir)
+        if ignored_smoke > 0:
+            print(f'Run id resolution: ignoring {ignored_smoke} smoke run directories.')
+        if not candidates:
+            raise FileNotFoundError(f'No run directories found under {base_save_dir}.')
+
+        candidates.sort(key=lambda x: x[0], reverse=True)
+        width_dirs: dict[int, str] = {}
+        width_sources: dict[int, str] = {}
+        for _, candidate_run in candidates:
+            candidate_width_dirs = _filter_requested(_list_width_dirs(base_save_dir, candidate_run))
+            for width, width_dir in candidate_width_dirs.items():
+                if width not in width_dirs:
+                    width_dirs[width] = width_dir
+                    width_sources[width] = candidate_run
+            if requested_set is not None and len(width_dirs) >= len(requested_set):
+                break
+
+        if width_sources:
+            mapping = ', '.join(f'w{w}->{src}' for w, src in sorted(width_sources.items()))
+            print(f'Run id auto-selection chose newest run per width: {mapping}')
+
+        return width_dirs, width_sources
 
     exact_dir = join(base_save_dir, run_id)
     has_exact = os.path.isdir(exact_dir)
@@ -1369,7 +1433,7 @@ def main() -> None:
         if args.widths:
             raise RuntimeError(f'No matching widths found for requested filter: {args.widths}')
         raise RuntimeError(
-            f'No width directories found for run_id="{args.run_id}" under {args.base_save_dir}.'
+            f'No width directories found under {args.base_save_dir}.'
         )
 
     rng = np.random.default_rng(args.probe_seed)

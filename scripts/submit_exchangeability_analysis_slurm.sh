@@ -37,7 +37,7 @@ if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
 fi
 
-RUN_ID="${EXCHANGEABILITY_RUN_ID:-exchangeability}"
+RUN_ID="${EXCHANGEABILITY_RUN_ID:-}"
 RUN_ID_RESOLUTION="${EXCHANGEABILITY_RUN_ID_RESOLUTION:-latest_prefix}"
 
 default_base_save_dir_for_analysis() {
@@ -157,6 +157,11 @@ fi
 echo "Running exchangeability analysis for width=${WIDTH} in job ${SLURM_JOB_ID}"
 echo "Using UV_PROJECT_ENVIRONMENT=${UV_PROJECT_ENVIRONMENT}"
 echo "Using BASE_SAVE_DIR=${BASE_SAVE_DIR}"
+if [[ -n "${RUN_ID}" ]]; then
+  echo "Using run_id override=${RUN_ID}"
+else
+  echo "Using automatic run-id selection within BASE_SAVE_DIR"
+fi
 echo "Using output_csv=${OUTPUT_CSV}"
 echo "Using similarity_output_dir=${SIMILARITY_OUTPUT_DIR}"
 echo "Using resume flag=${RESUME_FLAG}"
@@ -168,7 +173,6 @@ cd "${ROOT_DIR}"
 CMD=(
   "${PY_BIN}" scripts/analyze_exchangeability.py
   --base-save-dir "${BASE_SAVE_DIR}"
-  --run-id "${RUN_ID}"
   --run-id-resolution "${RUN_ID_RESOLUTION}"
   --output-csv "${OUTPUT_CSV}"
   --similarity-output-dir "${SIMILARITY_OUTPUT_DIR}"
@@ -184,6 +188,9 @@ CMD=(
   --widths "${WIDTH}"
   "${RESUME_FLAG}"
 )
+if [[ -n "${RUN_ID}" ]]; then
+  CMD+=(--run-id "${RUN_ID}")
+fi
 echo "Running: ${CMD[*]}"
 "${CMD[@]}"
 

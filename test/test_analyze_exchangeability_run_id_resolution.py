@@ -71,6 +71,13 @@ def test_resolve_run_id_latest_prefix_ignores_similarity_cache_when_exact_exists
     assert _resolve_run_id(str(tmp_path), "exchangeability", "latest_prefix") == "exchangeability"
 
 
+def test_resolve_run_id_empty_chooses_latest_real_run(tmp_path: Path) -> None:
+    _make_dir(tmp_path, "exchangeability_job1", 100)
+    _make_dir(tmp_path, "exchangeability_cifar5m_job9", 300)
+    _make_dir(tmp_path, "exchangeability_cifar5m_smoke_20260320-180651_2678785_eb729e43", 400)
+    assert _resolve_run_id(str(tmp_path), "", "latest_prefix") == "exchangeability_cifar5m_job9"
+
+
 def test_resolve_width_dirs_latest_prefix_picks_latest_per_requested_width(tmp_path: Path) -> None:
     _make_dir(tmp_path, "exchangeability_job1", 100, widths=(32,))
     _make_dir(tmp_path, "exchangeability_job2", 200, widths=(64,))
@@ -123,3 +130,20 @@ def test_resolve_width_dirs_auto_uses_newest_source_per_width(tmp_path: Path) ->
     assert set(width_dirs.keys()) == {32, 64}
     assert width_sources[32] == "exchangeability_job2"
     assert width_sources[64] == "exchangeability"
+
+
+def test_resolve_width_dirs_empty_run_id_uses_newest_run_per_width(tmp_path: Path) -> None:
+    _make_dir(tmp_path, "exchangeability_job1", 100, widths=(32,))
+    _make_dir(tmp_path, "exchangeability_cifar5m_job2", 200, widths=(64,))
+    _make_dir(tmp_path, "exchangeability_job3", 300, widths=(32,))
+
+    width_dirs, width_sources = _resolve_width_dirs(
+        str(tmp_path),
+        "",
+        "latest_prefix",
+        requested_widths=[32, 64],
+    )
+
+    assert set(width_dirs.keys()) == {32, 64}
+    assert width_sources[32] == "exchangeability_job3"
+    assert width_sources[64] == "exchangeability_cifar5m_job2"
