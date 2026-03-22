@@ -208,6 +208,31 @@ def _is_run_dir(path: str) -> bool:
 
 
 
+def _is_smoke_run_dir_name(name: str) -> bool:
+    return '_smoke_' in name
+
+
+
+def _list_prefixed_run_candidates(
+    base_save_dir: str,
+    prefix: str,
+) -> tuple[list[tuple[float, str]], int]:
+    candidates: list[tuple[float, str]] = []
+    ignored_smoke = 0
+    for name in os.listdir(base_save_dir):
+        path = join(base_save_dir, name)
+        if not os.path.isdir(path):
+            continue
+        if not name.startswith(prefix):
+            continue
+        if _is_smoke_run_dir_name(name):
+            ignored_smoke += 1
+            continue
+        candidates.append((os.path.getmtime(path), name))
+    return candidates, ignored_smoke
+
+
+
 def _resolve_run_id(base_save_dir: str, run_id: str, resolution_mode: str) -> str:
     if not os.path.isdir(base_save_dir):
         raise FileNotFoundError(f'Base save dir does not exist: {base_save_dir}')
@@ -216,14 +241,11 @@ def _resolve_run_id(base_save_dir: str, run_id: str, resolution_mode: str) -> st
     has_exact = os.path.isdir(exact_dir)
 
     prefix = f'{run_id}_'
-    raw_candidates: list[tuple[float, str]] = []
-    for name in os.listdir(base_save_dir):
-        path = join(base_save_dir, name)
-        if not os.path.isdir(path):
-            continue
-        if not name.startswith(prefix):
-            continue
-        raw_candidates.append((os.path.getmtime(path), name))
+    raw_candidates, ignored_smoke = _list_prefixed_run_candidates(base_save_dir, prefix)
+    if ignored_smoke > 0:
+        print(
+            f'Run id resolution: ignoring {ignored_smoke} smoke "{prefix}*" directories.'
+        )
 
     run_candidates = [c for c in raw_candidates if _is_run_dir(join(base_save_dir, c[1]))]
     if run_candidates:
@@ -307,14 +329,11 @@ def _resolve_width_dirs(
     has_exact = os.path.isdir(exact_dir)
 
     prefix = f'{run_id}_'
-    raw_candidates: list[tuple[float, str]] = []
-    for name in os.listdir(base_save_dir):
-        path = join(base_save_dir, name)
-        if not os.path.isdir(path):
-            continue
-        if not name.startswith(prefix):
-            continue
-        raw_candidates.append((os.path.getmtime(path), name))
+    raw_candidates, ignored_smoke = _list_prefixed_run_candidates(base_save_dir, prefix)
+    if ignored_smoke > 0:
+        print(
+            f'Run id resolution: ignoring {ignored_smoke} smoke "{prefix}*" directories.'
+        )
 
     run_candidates = [c for c in raw_candidates if _is_run_dir(join(base_save_dir, c[1]))]
     if run_candidates:
