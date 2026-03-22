@@ -130,19 +130,34 @@ def _read_rows(path: str) -> list[dict[str, str]]:
     return normalized_rows
 
 
-def _merge_rows(
+def _merge_rows_with_stats(
     input_paths: list[str],
     *,
     output_path: str | None = None,
-) -> list[dict[str, str]]:
+) -> tuple[list[dict[str, str]], list[dict[str, int | str | bool]]]:
     chosen_rows: dict[tuple[str, int, int, str, str, int], dict[str, str]] = {}
     chosen_paths: dict[tuple[str, int, int, str, str, int], str] = {}
     output_abs = os.path.abspath(output_path) if output_path else None
+    stats_by_path: dict[str, dict[str, int | str | bool]] = {}
+
+    for raw_path in input_paths:
+        path_abs = os.path.abspath(raw_path)
+        stats_by_path[path_abs] = {
+            'path': path_abs,
+            'is_output': output_abs is not None and path_abs == output_abs,
+            'rows_read': 0,
+            'identical_rows_skipped': 0,
+            'conflict_rows_skipped': 0,
+            'replacement_rows_selected': 0,
+            'final_rows_selected': 0,
+        }
 
     for path in input_paths:
         path_abs = os.path.abspath(path)
         path_is_output = output_abs is not None and path_abs == output_abs
         rows = _read_rows(path)
+        stats = stats_by_path[path_abs]
+        stats['rows_read'] = int(stats['rows_read']) + len(rows)
         for row in rows:
             logical_key = _logical_row_identity(row)
             current_row = chosen_rows.get(logical_key)
@@ -152,6 +167,7 @@ def _merge_rows(
                 continue
 
             if _row_identity(current_row) == _row_identity(row):
+                stats['identical_rows_skipped'] = int(stats['identical_rows_skipped']) + 1
                 continue
 
             current_path = chosen_paths[logical_key]
@@ -159,9 +175,33 @@ def _merge_rows(
             if current_is_output and (not path_is_output):
                 chosen_rows[logical_key] = row
                 chosen_paths[logical_key] = path_abs
+                stats['replacement_rows_selected'] = int(stats['replacement_rows_selected']) + 1
+                continue
+
+            current_source = str(current_row.get('source_run_id', '')).strip()
+            next_source = str(row.get('source_run_id', '')).strip()
+            if (not current_source) and next_source:
+                chosen_rows[logical_key] = row
+                chosen_paths[logical_key] = path_abs
+                stats['replacement_rows_selected'] = int(stats['replacement_rows_selected']) + 1
+                continue
+
+            stats['conflict_rows_skipped'] = int(stats['conflict_rows_skipped']) + 1
 
     merged = list(chosen_rows.values())
     merged.sort(key=_row_sort_key)
+    for path_abs in chosen_paths.values():
+        stats_by_path[path_abs]['final_rows_selected'] = int(stats_by_path[path_abs]['final_rows_selected']) + 1
+    ordered_stats = [stats_by_path[os.path.abspath(path)] for path in input_paths]
+    return merged, ordered_stats
+
+
+def _merge_rows(
+    input_paths: list[str],
+    *,
+    output_path: str | None = None,
+) -> list[dict[str, str]]:
+    merged, _ = _merge_rows_with_stats(input_paths, output_path=output_path)
     return merged
 
 
@@ -200,7 +240,25 @@ def main() -> None:
     with open(lock_path, 'a+', encoding='utf-8') as lock_file:
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
         input_paths = _discover_input_paths(input_globs)
-        merged_rows = _merge_rows(input_paths, output_path=output_path)
+        print(f'Discovered {len(input_paths)} input CSV file(s):')
+        for path in input_paths:
+            path_abs = os.path.abspath(path)
+            marker = ' [output]' if path_abs == output_path else ''
+            print(f'  - {path_abs}{marker}')
+
+        merged_rows, merge_stats = _merge_rows_with_stats(input_paths, output_path=output_path)
+        print('Merge source summary:')
+        for stats in merge_stats:
+            label = 'USED' if int(stats['final_rows_selected']) > 0 else 'SKIPPED'
+            marker = ' [output]' if bool(stats['is_output']) else ''
+            print(
+                f'  - {label} {stats["path"]}{marker}: '
+                f'rows_read={int(stats["rows_read"])} '
+                f'final_rows_selected={int(stats["final_rows_selected"])} '
+                f'identical_rows_skipped={int(stats["identical_rows_skipped"])} '
+                f'conflict_rows_skipped={int(stats["conflict_rows_skipped"])} '
+                f'replacement_rows_selected={int(stats["replacement_rows_selected"])}'
+            )
         _write_csv_atomic(merged_rows, output_path)
         fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 

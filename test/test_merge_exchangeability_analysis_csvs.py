@@ -82,3 +82,27 @@ def test_merge_rows_prefers_per_width_rows_over_existing_canonical_output(tmp_pa
     assert len(merged) == 1
     assert merged[0]['source_run_id'] == 'exchangeability_job_new'
     assert merged[0]['w1_distance'] == '0.222'
+
+
+def test_merge_rows_prefers_populated_source_run_id_on_non_output_conflict(tmp_path):
+    blank_row = _base_row()
+    blank_row['width'] = '64'
+    blank_row['source_run_id'] = ''
+    blank_row['w1_distance'] = '0.111'
+
+    populated_row = _base_row()
+    populated_row['width'] = '64'
+    populated_row['source_run_id'] = 'exchangeability_job63961088'
+    populated_row['w1_distance'] = '0.222'
+
+    blank_csv = tmp_path / 'exchangeability_metrics_legacy.csv'
+    populated_csv = tmp_path / 'exchangeability_metrics_w64.csv'
+
+    _write_csv(blank_csv, ANALYSIS_FIELDNAMES, [blank_row])
+    _write_csv(populated_csv, ANALYSIS_FIELDNAMES, [populated_row])
+
+    merged = _merge_rows([str(blank_csv), str(populated_csv)])
+
+    assert len(merged) == 1
+    assert merged[0]['source_run_id'] == 'exchangeability_job63961088'
+    assert merged[0]['w1_distance'] == '0.222'
