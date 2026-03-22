@@ -114,6 +114,7 @@ def _script_text(
     manifest_relpath: str,
     job_name_prefix: str,
     submit_name: str,
+    base_save_dir_export: str,
 ) -> str:
     return f"""#!/usr/bin/env bash
 #SBATCH --job-name={job_name_prefix}{width}
@@ -140,13 +141,27 @@ if [[ ! -f "${{ROOT_DIR}}/pyproject.toml" ]]; then
   exit 2
 fi
 
-bash "${{ROOT_DIR}}/scripts/submit_exchangeability_slurm.sh" "${{ROOT_DIR}}/{manifest_relpath}"
+{base_save_dir_export}bash "${{ROOT_DIR}}/scripts/submit_exchangeability_slurm.sh" "${{ROOT_DIR}}/{manifest_relpath}"
 """
 
 
 def _make_executable(path: str) -> None:
     mode = os.stat(path).st_mode
     os.chmod(path, mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
+
+
+def _default_base_save_dir_export(dataset: str) -> str:
+    if dataset == 'cifar5m':
+        return (
+            'export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${CIFAR5M_BASE_SAVE_DIR:-'
+            '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m}}"\n'
+        )
+    if dataset == 'imagenet':
+        return (
+            'export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${IMAGENET_BASE_SAVE_DIR:-'
+            '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}}"\n'
+        )
+    return ''
 
 
 def main() -> None:
@@ -194,6 +209,7 @@ def main() -> None:
             manifest_relpath=manifest_relpath,
             job_name_prefix=args.job_name_prefix,
             submit_name=submit_name,
+            base_save_dir_export=_default_base_save_dir_export(dataset),
         )
         with open(submit_abs_path, 'w', encoding='utf-8') as f:
             f.write(text)

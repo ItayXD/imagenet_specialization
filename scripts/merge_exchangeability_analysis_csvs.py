@@ -43,8 +43,13 @@ def parse_args() -> argparse.Namespace:
         help='Input CSV glob. Can be passed multiple times.',
     )
     parser.add_argument(
+        '--base-save-dir',
+        default=os.environ.get('BASE_SAVE_DIR', ''),
+        help='Optional base save directory; defaults to BASE_SAVE_DIR if set.',
+    )
+    parser.add_argument(
         '--output',
-        required=True,
+        default='',
         help='Merged output CSV path.',
     )
     parser.add_argument(
@@ -175,9 +180,17 @@ def _write_csv_atomic(rows: list[dict[str, str]], output_path: str) -> None:
 def main() -> None:
     args = parse_args()
     input_globs = args.inputs_glob or []
+    base_save_dir = os.path.abspath(args.base_save_dir) if args.base_save_dir else ''
     if not input_globs:
-        raise RuntimeError('At least one --inputs-glob is required.')
-    output_path = os.path.abspath(args.output)
+        if not base_save_dir:
+            raise RuntimeError('Pass --inputs-glob or --base-save-dir.')
+        input_globs = [os.path.join(base_save_dir, 'exchangeability_metrics_w*.csv')]
+    if args.output:
+        output_path = os.path.abspath(args.output)
+    elif base_save_dir:
+        output_path = os.path.join(base_save_dir, 'exchangeability_metrics.csv')
+    else:
+        raise RuntimeError('Pass --output or --base-save-dir.')
     lock_path = os.path.abspath(args.lock_file) if args.lock_file else f'{output_path}.lock'
 
     lock_dir = os.path.dirname(lock_path)

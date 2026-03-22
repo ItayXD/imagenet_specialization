@@ -34,7 +34,17 @@ MICROBATCH_SIZE="${6:-}"
 NUM_WORKERS="${7:-}"
 TIMING_SOURCE="${8:-auto}"
 
-LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
+default_base_save_dir_for_experiment() {
+  if [[ "${EXPERIMENT}" == *cifar5m* ]]; then
+    printf '%s\n' "${CIFAR5M_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m}"
+  else
+    printf '%s\n' "${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}"
+  fi
+}
+
+BASE_SAVE_DIR="${BASE_SAVE_DIR:-$(default_base_save_dir_for_experiment)}"
+export BASE_SAVE_DIR
+LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/largest_smoke_${SLURM_JOB_ID}.out") 2>&1
 

@@ -18,9 +18,17 @@ IMAGENET_FOLDER = os.environ.get(
     'IMAGENET_FOLDER',
     os.path.join(DEFAULT_CLUSTER_ROOT, 'imagenet'),
 )
+IMAGENET_BASE_SAVE_DIR = os.environ.get(
+    'IMAGENET_BASE_SAVE_DIR',
+    os.path.join(DEFAULT_CLUSTER_ROOT, 'exchangeability_imagenet'),
+)
+CIFAR5M_BASE_SAVE_DIR = os.environ.get(
+    'CIFAR5M_BASE_SAVE_DIR',
+    os.path.join(DEFAULT_CLUSTER_ROOT, 'exchangeability_cifar5m'),
+)
 BASE_SAVE_DIR = os.environ.get(
     'BASE_SAVE_DIR',
-    os.path.join(DEFAULT_CLUSTER_ROOT, 'exchangeability_outputs'),
+    IMAGENET_BASE_SAVE_DIR,
 )
 
 LOCAL_RESULTS_FOLDER = "results"

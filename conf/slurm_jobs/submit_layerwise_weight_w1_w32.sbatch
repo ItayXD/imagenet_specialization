@@ -22,4 +22,5 @@ if [[ ! -f "${ROOT_DIR}/pyproject.toml" ]]; then
   exit 2
 fi
 
+export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}}"
 bash "${ROOT_DIR}/scripts/submit_layerwise_weight_w1_slurm.sh" 32

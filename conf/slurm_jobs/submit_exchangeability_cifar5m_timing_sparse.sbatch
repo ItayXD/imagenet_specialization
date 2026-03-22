@@ -27,6 +27,7 @@ if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
 fi
 
+export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${CIFAR5M_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m}}"
 bash "${ROOT_DIR}/scripts/submit_timing_sweep_slurm.sh" \
   "${ROOT_DIR}/conf/manifests/cifar5m/exchangeability_manifest_timing_sparse.csv" \
   20 \

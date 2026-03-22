@@ -128,7 +128,9 @@ def test_builds_dataset_aware_names_when_manifest_has_dataset(tmp_path, monkeypa
     main()
 
     assert (manifest_out / 'cifar5m_exchangeability_manifest_w32.csv').exists()
-    assert (slurm_out / 'submit_exchangeability_cifar5m_w32.sbatch').exists()
+    submit_script = slurm_out / 'submit_exchangeability_cifar5m_w32.sbatch'
+    assert submit_script.exists()
     submit_all = slurm_out / 'submit_exchangeability_cifar5m_all_widths.sh'
     assert submit_all.exists()
     assert 'submit_exchangeability_cifar5m_w32.sbatch' in submit_all.read_text(encoding='utf-8')
+    assert 'CIFAR5M_BASE_SAVE_DIR' in submit_script.read_text(encoding='utf-8')

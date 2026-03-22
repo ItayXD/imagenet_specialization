@@ -14,8 +14,19 @@ import pandas as pd
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Plot exchangeability analysis outputs.')
-    parser.add_argument('--input-csv', default='outputs/exchangeability_metrics.csv', help='Input analysis CSV')
-    parser.add_argument('--output-dir', default='outputs/plots_exchangeability', help='Directory for plots')
+    default_base_save_dir = os.environ.get('BASE_SAVE_DIR', '').strip()
+    default_input_csv = (
+        os.path.join(default_base_save_dir, 'exchangeability_metrics.csv')
+        if default_base_save_dir
+        else 'outputs/exchangeability_metrics.csv'
+    )
+    default_output_dir = (
+        os.path.join(default_base_save_dir, 'plots_exchangeability')
+        if default_base_save_dir
+        else 'outputs/plots_exchangeability'
+    )
+    parser.add_argument('--input-csv', default=default_input_csv, help='Input analysis CSV')
+    parser.add_argument('--output-dir', default=default_output_dir, help='Directory for plots')
     return parser.parse_args()
 
 

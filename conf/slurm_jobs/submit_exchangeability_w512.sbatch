@@ -23,4 +23,5 @@ if [[ ! -f "${ROOT_DIR}/pyproject.toml" ]]; then
   exit 2
 fi
 
+export BASE_SAVE_DIR="${BASE_SAVE_DIR:-${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}}"
 bash "${ROOT_DIR}/scripts/submit_exchangeability_slurm.sh" "${ROOT_DIR}/conf/manifests_by_width/exchangeability_manifest_w512.csv"

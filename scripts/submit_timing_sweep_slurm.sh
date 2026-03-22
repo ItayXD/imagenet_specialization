@@ -42,6 +42,18 @@ if [[ ! -f "${MANIFEST_PATH}" ]]; then
   exit 1
 fi
 
+default_base_save_dir_for_manifest() {
+  local manifest_path="$1"
+  if [[ "${manifest_path}" == *cifar5m* ]]; then
+    printf '%s\n' "${CIFAR5M_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m}"
+  else
+    printf '%s\n' "${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}"
+  fi
+}
+
+BASE_SAVE_DIR="${BASE_SAVE_DIR:-$(default_base_save_dir_for_manifest "${MANIFEST_PATH}")}"
+export BASE_SAVE_DIR
+
 TOTAL_ROWS=$(( $(wc -l < "${MANIFEST_PATH}") - 1 ))
 if [[ ${TOTAL_ROWS} -le 0 ]]; then
   echo "Manifest has no rows: ${MANIFEST_PATH}" >&2
@@ -54,7 +66,7 @@ if [[ ${TASK_ID} -ge ${TOTAL_ROWS} ]]; then
   exit 0
 fi
 
-LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
+LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/timing_sweep_${SLURM_ARRAY_JOB_ID}_${TASK_ID}.out") 2>&1
 
@@ -65,7 +77,7 @@ if [[ -n "${SUMMARY_DIR_ARG}" ]]; then
     SUMMARY_DIR="${SUMMARY_DIR_ARG}"
   fi
 else
-  SUMMARY_DIR="${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/timing_sweep"
+  SUMMARY_DIR="${BASE_SAVE_DIR}/timing_sweep"
 fi
 mkdir -p "${SUMMARY_DIR}"
 

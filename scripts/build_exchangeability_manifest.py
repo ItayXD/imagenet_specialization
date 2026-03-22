@@ -9,7 +9,7 @@ from os.path import basename, dirname, join
 
 from omegaconf import OmegaConf
 
-from src.run.constants import BASE_SAVE_DIR
+from src.run.constants import BASE_SAVE_DIR, CIFAR5M_BASE_SAVE_DIR, IMAGENET_BASE_SAVE_DIR
 
 
 @dataclass
@@ -34,7 +34,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description='Build manifest for exchangeability SLURM array runs.')
     parser.add_argument('--config-dir', default='conf/experiment', help='Directory containing exchangeability_*.yaml configs')
     parser.add_argument('--output', default='conf/exchangeability_manifest.csv', help='Manifest CSV path')
-    parser.add_argument('--base-save-dir', default=BASE_SAVE_DIR or '/tmp/exchangeability_outputs', help='Base save directory used by training runs')
+    parser.add_argument('--base-save-dir', default='', help='Base save directory used by training runs')
     parser.add_argument('--dataset', default='', help='Optional dataset filter (for example imagenet or cifar5m)')
     return parser.parse_args()
 
@@ -135,10 +135,16 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
 
 def main() -> None:
     args = parse_args()
+    if args.base_save_dir:
+        base_save_dir = args.base_save_dir
+    elif args.dataset == 'cifar5m':
+        base_save_dir = CIFAR5M_BASE_SAVE_DIR or '/tmp/exchangeability_cifar5m'
+    else:
+        base_save_dir = BASE_SAVE_DIR or IMAGENET_BASE_SAVE_DIR or '/tmp/exchangeability_imagenet'
     config_paths = _iter_config_paths(args.config_dir)
     rows = []
     for path in config_paths:
-        row = _parse_row(job_id=len(rows), cfg_path=path, base_save_dir=args.base_save_dir)
+        row = _parse_row(job_id=len(rows), cfg_path=path, base_save_dir=base_save_dir)
         if args.dataset and row.dataset != args.dataset:
             continue
         rows.append(row)

@@ -25,7 +25,7 @@ if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
 fi
 
-LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}/slurm_logs}"
+LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR:-${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/fast_tests_${SLURM_JOB_ID}.out") 2>&1
 

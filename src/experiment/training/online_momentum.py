@@ -20,7 +20,7 @@ from src.experiment.dataset_specs import get_dataset_spec
 from src.experiment.model.flax_mup.mup import Mup
 from src.experiment.model.flax_mup.resnet import ResNet18
 from src.experiment.exchangeability_utils import make_target_points
-from src.run.constants import BASE_SAVE_DIR
+from src.run.constants import BASE_SAVE_DIR, CIFAR5M_BASE_SAVE_DIR, IMAGENET_BASE_SAVE_DIR
 
 # Backward-compatible alias for existing callers/tests that used the old location.
 _make_target_points = make_target_points
@@ -91,13 +91,22 @@ def _write_jsonl(path: str, row: dict) -> None:
         f.write(json.dumps(row) + '\n')
 
 
+def _default_base_save_dir_for_dataset(dataset: str) -> str:
+    env_base_dir = os.environ.get('BASE_SAVE_DIR', '').strip()
+    if env_base_dir:
+        return env_base_dir
+    if dataset == 'cifar5m':
+        return CIFAR5M_BASE_SAVE_DIR or os.path.join(os.getcwd(), 'exchangeability_cifar5m')
+    return IMAGENET_BASE_SAVE_DIR or BASE_SAVE_DIR or os.path.join(os.getcwd(), 'exchangeability_imagenet')
+
+
 def _resolve_run_dirs(training_params: dict, N: int, n_ensemble: int) -> dict[str, str]:
     run_id = str(training_params.get('run_id', 'exchangeability'))
     width = int(training_params.get('width', N))
     group_id = int(training_params.get('group_id', 0))
     dataset = str(training_params.get('dataset', 'imagenet'))
 
-    base_dir = BASE_SAVE_DIR or os.path.join(os.getcwd(), 'outputs')
+    base_dir = str(training_params.get('base_save_dir', '')).strip() or _default_base_save_dir_for_dataset(dataset)
     run_dir = os.path.join(base_dir, run_id, f'width_{width}', f'group_{group_id}')
 
     state_ckpt_dir = os.path.join(run_dir, 'state_ckpts')

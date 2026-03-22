@@ -99,7 +99,7 @@ def parse_args() -> argparse.Namespace:
         default='auto',
         help='How to resolve --run-id when both exact and suffixed runs exist.',
     )
-    parser.add_argument('--output-csv', default='outputs/exchangeability_metrics.csv', help='Output CSV path')
+    parser.add_argument('--output-csv', default='', help='Output CSV path (defaults to <base-save-dir>/exchangeability_metrics.csv)')
     parser.add_argument(
         '--similarity-output-dir',
         default='',
@@ -1351,6 +1351,12 @@ def _prepare_resume_state(
 
 def main() -> None:
     args = parse_args()
+    if args.output_csv and args.output_csv.strip():
+        args.output_csv = os.path.abspath(args.output_csv)
+    else:
+        args.output_csv = os.path.abspath(
+            os.path.join(args.base_save_dir, 'exchangeability_metrics.csv')
+        )
     shuffle_stats_workers = _resolve_shuffle_stats_workers(args.shuffle_stats_workers)
 
     width_dirs, width_sources = _resolve_width_dirs(

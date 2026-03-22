@@ -37,7 +37,28 @@ if [[ -f "${ROOT_DIR}/scripts/cluster_env.sh" ]]; then
   source "${ROOT_DIR}/scripts/cluster_env.sh"
 fi
 
-BASE_SAVE_DIR="${BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_outputs}"
+RUN_ID="${EXCHANGEABILITY_RUN_ID:-exchangeability}"
+RUN_ID_RESOLUTION="${EXCHANGEABILITY_RUN_ID_RESOLUTION:-latest_prefix}"
+
+default_base_save_dir_for_analysis() {
+  local dataset_hint="${EXCHANGEABILITY_DATASET:-}"
+  if [[ -z "${dataset_hint}" ]]; then
+    if [[ "${RUN_ID}" == *cifar5m* ]]; then
+      dataset_hint="cifar5m"
+    else
+      dataset_hint="imagenet"
+    fi
+  fi
+
+  if [[ "${dataset_hint}" == "cifar5m" ]]; then
+    printf '%s\n' "${CIFAR5M_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m}"
+  else
+    printf '%s\n' "${IMAGENET_BASE_SAVE_DIR:-/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet}"
+  fi
+}
+
+BASE_SAVE_DIR="${BASE_SAVE_DIR:-$(default_base_save_dir_for_analysis)}"
+export BASE_SAVE_DIR
 CANONICAL_OUTPUT_CSV="${BASE_SAVE_DIR}/exchangeability_metrics.csv"
 
 resolve_path() {
@@ -78,9 +99,7 @@ if [[ ! -x "${PY_BIN}" ]]; then
   exit 2
 fi
 
-RUN_ID="${EXCHANGEABILITY_RUN_ID:-exchangeability}"
-RUN_ID_RESOLUTION="${EXCHANGEABILITY_RUN_ID_RESOLUTION:-latest_prefix}"
-SHUFFLE_REPEATS="${EXCHANGEABILITY_SHUFFLE_REPEATS:-2000}"
+SHUFFLE_REPEATS="${EXCHANGEABILITY_SHUFFLE_REPEATS:-100}"
 SHUFFLE_STATS_WORKERS="${EXCHANGEABILITY_SHUFFLE_STATS_WORKERS:-0}"
 PROBE_BATCH_SIZE="${EXCHANGEABILITY_PROBE_BATCH_SIZE:-1024}"
 LOG_EVERY_SHUFFLES="${EXCHANGEABILITY_LOG_EVERY_SHUFFLES:-50}"

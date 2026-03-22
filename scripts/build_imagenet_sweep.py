@@ -31,7 +31,7 @@ DEFAULT_CLUSTER_ROOT = os.environ.get(
     '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie',
 )
 BASE_DIR = DEFAULT_CLUSTER_ROOT + '/exchangeability_runs/w{width}/g{group_id}'
-RUN_ID = 'exchangeability_imagenet'
+RUN_ID = 'exchangeability'
 FULL_IMAGENET_TRAIN_SIZE = 1_281_167
 WANDB_PROJECT = os.environ.get('WANDB_PROJECT', 'imagenet_specialization')
 WANDB_ENTITY = os.environ.get('WANDB_ENTITY', '')

@@ -62,16 +62,18 @@ The code defaults to:
 
 1. `EXCHANGEABILITY_ROOT=/n/netscratch/kempner_pehlevan_lab/Lab/ilavie`
 2. `IMAGENET_FOLDER=$EXCHANGEABILITY_ROOT/imagenet`
-3. `BASE_SAVE_DIR=$EXCHANGEABILITY_ROOT/exchangeability_outputs`
-4. `REMOTE_RESULTS_FOLDER=$EXCHANGEABILITY_ROOT`
-5. `SBATCH_ACCOUNT=kempner_pehlevan_lab`
-6. `SBATCH_PARTITION=kempner`
-7. `WANDB_PROJECT=imagenet_specialization`
-8. `HF_IMAGENET_REPO_ID=ILSVRC/imagenet-1k` (override if needed)
-9. `HF_HOME=$EXCHANGEABILITY_ROOT/hf_cache`
-10. `HF_DATASETS_CACHE=$HF_HOME/datasets`
-11. `HUGGINGFACE_HUB_CACHE=$HF_HOME/hub`
-12. `UV_CACHE_DIR=$EXCHANGEABILITY_ROOT/uv_cache`
+3. `IMAGENET_BASE_SAVE_DIR=$EXCHANGEABILITY_ROOT/exchangeability_imagenet`
+4. `CIFAR5M_BASE_SAVE_DIR=$EXCHANGEABILITY_ROOT/exchangeability_cifar5m`
+5. `BASE_SAVE_DIR=$IMAGENET_BASE_SAVE_DIR`
+6. `REMOTE_RESULTS_FOLDER=$EXCHANGEABILITY_ROOT`
+7. `SBATCH_ACCOUNT=kempner_pehlevan_lab`
+8. `SBATCH_PARTITION=kempner`
+9. `WANDB_PROJECT=imagenet_specialization`
+10. `HF_IMAGENET_REPO_ID=ILSVRC/imagenet-1k` (override if needed)
+11. `HF_HOME=$EXCHANGEABILITY_ROOT/hf_cache`
+12. `HF_DATASETS_CACHE=$HF_HOME/datasets`
+13. `HUGGINGFACE_HUB_CACHE=$HF_HOME/hub`
+14. `UV_CACHE_DIR=$EXCHANGEABILITY_ROOT/uv_cache`
 
 Load these defaults in each shell with:
 
@@ -315,6 +317,13 @@ source scripts/cluster_env.sh
 bash conf/slurm_jobs/submit_exchangeability_analysis_all_widths.sh
 ```
 
+For CIFAR-5M analysis, switch the save root first:
+
+```bash
+source scripts/cluster_env.sh
+export BASE_SAVE_DIR="$CIFAR5M_BASE_SAVE_DIR"
+```
+
 Default behavior:
 
 1. each width writes to `$BASE_SAVE_DIR/exchangeability_metrics_w{width}.csv`
@@ -345,7 +354,7 @@ Manual non-SLURM run (single process):
 source scripts/cluster_env.sh
 uv run python scripts/analyze_exchangeability.py \
   --base-save-dir "$BASE_SAVE_DIR" \
-  --run-id exchangeability \
+  --run-id "${EXCHANGEABILITY_RUN_ID:-exchangeability}" \
   --run-id-resolution latest_prefix \
   --output-csv "$BASE_SAVE_DIR/exchangeability_metrics.csv" \
   --shuffle-repeats 2000 \
@@ -364,8 +373,8 @@ uv run python scripts/plot_exchangeability.py \
 
 ## Notebook Analysis
 
-- `notebooks/exchangeability_analysis.ipynb`
-- `notebooks/exchangeability_plots.ipynb`
+- `notebooks/exchangeability_analysis.ipynb` selects `BASE_SAVE_DIR` from `EXCHANGEABILITY_DATASET=imagenet|cifar5m`
+- `notebooks/exchangeability_plots.ipynb` selects `BASE_SAVE_DIR` from `EXCHANGEABILITY_DATASET=imagenet|cifar5m`
 
 Both notebooks consume the same CSV from `scripts/analyze_exchangeability.py`.
 
