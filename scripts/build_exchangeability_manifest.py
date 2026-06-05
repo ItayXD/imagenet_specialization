@@ -17,6 +17,8 @@ class ManifestRow:
     job_id: int
     dataset: str
     run_id: str
+    optimizer: str
+    eta_0: float
     width: int
     group_id: int
     member_seed_list: list[int]
@@ -36,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--output', default='conf/exchangeability_manifest.csv', help='Manifest CSV path')
     parser.add_argument('--base-save-dir', default='', help='Base save directory used by training runs')
     parser.add_argument('--dataset', default='', help='Optional dataset filter (for example imagenet or cifar5m)')
+    parser.add_argument('--name-prefix', default='', help='Optional experiment config filename prefix filter')
     return parser.parse_args()
 
 
@@ -46,10 +49,10 @@ def _derive_member_seeds(task_seed: int, member_group_size: int) -> list[int]:
 
 
 
-def _iter_config_paths(config_dir: str) -> list[str]:
+def _iter_config_paths(config_dir: str, name_prefix: str = '') -> list[str]:
     names = sorted(
         n for n in os.listdir(config_dir)
-        if ('exchangeability' in n) and n.endswith('.yaml')
+        if ('exchangeability' in n) and n.endswith('.yaml') and (not name_prefix or n.startswith(name_prefix))
     )
     return [join(config_dir, n) for n in names]
 
@@ -65,6 +68,8 @@ def _parse_row(job_id: int, cfg_path: str, base_save_dir: str) -> ManifestRow:
     width = int(mp.N)
     group_id = int(tp.group_id)
     run_id = str(tp.run_id)
+    optimizer = str(tp.optimizer)
+    eta_0 = float(tp.eta_0)
 
     member_group_size = int(tp.member_group_size)
     member_seed_list = _derive_member_seeds(task_seed, member_group_size)
@@ -76,6 +81,8 @@ def _parse_row(job_id: int, cfg_path: str, base_save_dir: str) -> ManifestRow:
         job_id=job_id,
         dataset=dataset,
         run_id=run_id,
+        optimizer=optimizer,
+        eta_0=eta_0,
         width=width,
         group_id=group_id,
         member_seed_list=member_seed_list,
@@ -99,6 +106,8 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
                 'job_id',
                 'dataset',
                 'run_id',
+                'optimizer',
+                'eta_0',
                 'width',
                 'group_id',
                 'member_seed_list',
@@ -118,6 +127,8 @@ def write_manifest(rows: list[ManifestRow], output_path: str) -> None:
                     'job_id': row.job_id,
                     'dataset': row.dataset,
                     'run_id': row.run_id,
+                    'optimizer': row.optimizer,
+                    'eta_0': row.eta_0,
                     'width': row.width,
                     'group_id': row.group_id,
                     'member_seed_list': json.dumps(row.member_seed_list),
@@ -141,7 +152,7 @@ def main() -> None:
         base_save_dir = CIFAR5M_BASE_SAVE_DIR or '/tmp/exchangeability_cifar5m'
     else:
         base_save_dir = BASE_SAVE_DIR or IMAGENET_BASE_SAVE_DIR or '/tmp/exchangeability_imagenet'
-    config_paths = _iter_config_paths(args.config_dir)
+    config_paths = _iter_config_paths(args.config_dir, name_prefix=args.name_prefix)
     rows = []
     for path in config_paths:
         row = _parse_row(job_id=len(rows), cfg_path=path, base_save_dir=base_save_dir)

@@ -35,6 +35,7 @@ class WarmupCosineDecayParameters:
 @dataclass
 class TrainingParams:
     eta_0: float = 8e-3
+    optimizer: str = 'adam'
     # momentum: float = 0.9
     # weight_decay: float = 1e-5 # TODO: not implemented; replace with batch_size
     minibatch_size: int = 1024 # changed

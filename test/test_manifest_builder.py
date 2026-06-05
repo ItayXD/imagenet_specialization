@@ -1,4 +1,4 @@
-from scripts.build_exchangeability_manifest import _derive_member_seeds, _parse_row
+from scripts.build_exchangeability_manifest import _derive_member_seeds, _iter_config_paths, _parse_row
 
 
 
@@ -26,6 +26,8 @@ def test_parse_row_includes_dataset_and_run_id(tmp_path):
                 '    val_P: 1024',
                 '  task_list:',
                 '    - training_params:',
+                '        eta_0: 0.01',
+                '        optimizer: sgd',
                 '        run_id: exchangeability_cifar5m',
                 '        group_id: 0',
                 '        target_images_seen: 5000000',
@@ -43,4 +45,15 @@ def test_parse_row_includes_dataset_and_run_id(tmp_path):
     row = _parse_row(job_id=0, cfg_path=str(cfg_path), base_save_dir='/tmp/outputs')
     assert row.dataset == 'cifar5m'
     assert row.run_id == 'exchangeability_cifar5m'
+    assert row.optimizer == 'sgd'
+    assert row.eta_0 == 0.01
     assert row.save_dir == '/tmp/outputs/exchangeability_cifar5m/width_32/group_0'
+
+
+def test_iter_config_paths_supports_name_prefix_filter(tmp_path):
+    (tmp_path / 'cifar5m_exchangeability_sgd_w32_g0.yaml').write_text('', encoding='utf-8')
+    (tmp_path / 'cifar5m_exchangeability_w32_g0.yaml').write_text('', encoding='utf-8')
+
+    paths = _iter_config_paths(str(tmp_path), name_prefix='cifar5m_exchangeability_sgd_')
+
+    assert paths == [str(tmp_path / 'cifar5m_exchangeability_sgd_w32_g0.yaml')]

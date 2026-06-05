@@ -63,11 +63,14 @@ class Mup:
         self._width_mults = jax.tree_util.tree_map(f_width_mults, self.base_shapes, variables)
 
 
-    def wrap_optimizer(self, optimizer, adam=True):
+    def wrap_optimizer(self, optimizer, adam=True, scale_tree=None):
         """Apply the per-parameter learning rates computed by `init_context` to an Optax optimizer."""
         if not self._adam_lrs:
             raise ValueError(
                 'Attempted to wrap optimizer before initializing network. Did you forget to use init_base/init_target/apply_mup?')
+
+        if scale_tree is None:
+            scale_tree = self._adam_lrs if adam else self._sgd_lrs
 
         def init_fn(params):
             return optax.EmptyState()
@@ -76,7 +79,7 @@ class Mup:
             updates = jax.tree_map(
                 lambda update, scale: update * scale,
                 updates,
-                self._adam_lrs if adam else self._sgd_lrs
+                scale_tree,
             )
 
             return updates, state

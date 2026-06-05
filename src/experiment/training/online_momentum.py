@@ -100,6 +100,116 @@ def _default_base_save_dir_for_dataset(dataset: str) -> str:
     return IMAGENET_BASE_SAVE_DIR or BASE_SAVE_DIR or os.path.join(os.getcwd(), 'exchangeability_imagenet')
 
 
+def _flatten_conv_kernel_for_muon(kernel: jnp.ndarray) -> jnp.ndarray:
+    out_channels_first = jnp.moveaxis(kernel, -1, 0)
+    return out_channels_first.reshape((kernel.shape[-1], -1))
+
+
+def _restore_conv_kernel_from_muon(matrix: jnp.ndarray, original_shape: tuple[int, ...]) -> jnp.ndarray:
+    restored = matrix.reshape((original_shape[-1],) + tuple(original_shape[:-1]))
+    return jnp.moveaxis(restored, 0, -1)
+
+
+def _reshape_4d_kernels_for_muon(
+    optimizer: optax.GradientTransformation,
+) -> optax.GradientTransformation:
+    def init_fn(params):
+        flat_params = jax.tree.map(_flatten_conv_kernel_for_muon, params)
+        return optimizer.init(flat_params)
+
+    def update_fn(updates, state, params=None):
+        original_updates = updates
+        flat_updates = jax.tree.map(_flatten_conv_kernel_for_muon, updates)
+        flat_params = None if params is None else jax.tree.map(_flatten_conv_kernel_for_muon, params)
+        flat_updates, state = optimizer.update(flat_updates, state, flat_params)
+        updates = jax.tree.map(
+            lambda flat_update, update: _restore_conv_kernel_from_muon(flat_update, update.shape),
+            flat_updates,
+            original_updates,
+        )
+        return updates, state
+
+    return optax.GradientTransformation(init_fn, update_fn)
+
+
+def _label_muon_params(params):
+    def walk(tree, path):
+        try:
+            items = tree.items()
+        except AttributeError:
+            path_str = '/'.join(path)
+            if path_str == 'conv_init/kernel':
+                return 'adam'
+            if path and path[-1] == 'kernel' and getattr(tree, 'ndim', None) == 4:
+                return 'muon'
+            return 'adam'
+
+        return {key: walk(value, path + (str(key),)) for key, value in items}
+
+    return walk(params, ())
+
+
+def _build_muon_mup_scale_tree(params, mup: Mup):
+    param_labels = _label_muon_params(params)
+    return jax.tree.map(
+        lambda label, adam_scale, sgd_scale: sgd_scale if label == 'muon' else adam_scale,
+        param_labels,
+        mup._adam_lrs,
+        mup._sgd_lrs,
+    )
+
+
+def _build_optimizer(training_params: dict, total_micro_steps: int) -> tuple[str, optax.GradientTransformation, Any]:
+    eta_0 = float(training_params['eta_0'])
+    optimizer_name = str(training_params.get('optimizer', 'adam')).strip().lower()
+    use_warmup_cosine_decay = bool(training_params.get('use_warmup_cosine_decay', True))
+
+    if use_warmup_cosine_decay:
+        wcd_params = training_params['wcd_params']
+        init_lr = float(wcd_params['init_lr'])
+        min_lr = float(wcd_params['min_lr'])
+
+        warmup_steps = max(1, int(total_micro_steps * 0.01))
+        decay_steps = max(warmup_steps + 1, total_micro_steps)
+
+        lr_schedule = optax.warmup_cosine_decay_schedule(
+            init_value=init_lr,
+            peak_value=eta_0,
+            warmup_steps=warmup_steps,
+            decay_steps=decay_steps,
+            end_value=min_lr,
+        )
+    else:
+        lr_schedule = lambda _: eta_0
+
+    if optimizer_name == 'adam':
+        if use_warmup_cosine_decay:
+            base_optimizer = optax.adam(learning_rate=lr_schedule)
+        else:
+            base_optimizer = optax.adam(eta_0)
+    elif optimizer_name == 'muon':
+        learning_rate = lr_schedule if use_warmup_cosine_decay else eta_0
+        base_optimizer = optax.partition(
+            transforms={
+                'muon': optax.chain(
+                    _reshape_4d_kernels_for_muon(optax.contrib.scale_by_muon()),
+                    optax.scale_by_learning_rate(learning_rate),
+                ),
+                'adam': optax.adamw(learning_rate=learning_rate),
+            },
+            param_labels=_label_muon_params,
+        )
+    elif optimizer_name == 'sgd':
+        if use_warmup_cosine_decay:
+            base_optimizer = optax.sgd(learning_rate=lr_schedule)
+        else:
+            base_optimizer = optax.sgd(eta_0)
+    else:
+        raise ValueError(f'Unsupported optimizer: {optimizer_name}')
+
+    return optimizer_name, base_optimizer, lr_schedule
+
+
 def _resolve_run_dirs(training_params: dict, N: int, n_ensemble: int) -> dict[str, str]:
     run_id = str(training_params.get('run_id', 'exchangeability'))
     width = int(training_params.get('width', N))
@@ -542,35 +652,16 @@ def apply(key, train_loader, val_data, devices, model_params, training_params):
     vars_0 = initialize(init_keys, N, ensemble_subsets, mup, dtype, dataset_spec)
     info('Initialized parameters.')
 
-    eta_0 = float(training_params['eta_0'])
-    use_warmup_cosine_decay = bool(training_params.get('use_warmup_cosine_decay', True))
-
     target_images_seen = int(training_params.get('target_images_seen', 10_000_000))
     microbatch_size = int(training_params['microbatch_size'])
     total_micro_steps = int(np.ceil(target_images_seen / microbatch_size))
 
-    lr_schedule = None
-    if use_warmup_cosine_decay:
-        wcd_params = training_params['wcd_params']
-        init_lr = float(wcd_params['init_lr'])
-        min_lr = float(wcd_params['min_lr'])
-
-        warmup_steps = max(1, int(total_micro_steps * 0.01))
-        decay_steps = max(warmup_steps + 1, total_micro_steps)
-
-        lr_schedule = optax.warmup_cosine_decay_schedule(
-            init_value=init_lr,
-            peak_value=eta_0,
-            warmup_steps=warmup_steps,
-            decay_steps=decay_steps,
-            end_value=min_lr,
-        )
-        base_optimizer = optax.adam(learning_rate=lr_schedule)
+    optimizer_name, base_optimizer, lr_schedule = _build_optimizer(training_params, total_micro_steps)
+    if optimizer_name == 'muon':
+        scale_tree = _build_muon_mup_scale_tree(vars_target['params'], mup)
+        optimizer = mup.wrap_optimizer(base_optimizer, scale_tree=scale_tree)
     else:
-        base_optimizer = optax.adam(eta_0)
-        lr_schedule = lambda _: eta_0
-
-    optimizer = mup.wrap_optimizer(base_optimizer, adam=True)
+        optimizer = mup.wrap_optimizer(base_optimizer, adam=(optimizer_name != 'sgd'))
 
     info('Entering train function.')
     _ = train(
