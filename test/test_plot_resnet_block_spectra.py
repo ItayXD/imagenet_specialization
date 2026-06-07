@@ -66,7 +66,7 @@ def test_member_spectrum_summary_returns_expected_singular_values_and_mp_edge():
     )
 
     assert np.allclose(singular_values, [3.0, 4.0])
-    assert np.allclose(normalized, [3.0 / np.sqrt(12.5), 4.0 / np.sqrt(12.5)], atol=1e-6)
+    assert np.allclose(normalized, [3.0 / np.sqrt(2.0), 4.0 / np.sqrt(2.0)], atol=1e-6)
     assert np.isclose(aspect_ratio, 1.0)
     assert np.isclose(mp_edge_normalized, 2.0)
     assert unfolded_shape == (2, 2)
@@ -108,7 +108,7 @@ def test_normalize_singular_values_matches_mp_scaling_for_rectangular_matrix():
     normalized, aspect_ratio, mp_edge_normalized = _normalize_singular_values(
         singular_values,
         (4, 2),
-        normalization_mode='empirical',
+        theoretical_mp_scale_sq=6.25,
     )
 
     assert np.allclose(normalized, [1.6, 1.2], atol=1e-6)
@@ -122,7 +122,6 @@ def test_normalize_singular_values_init_theory_uses_supplied_scale():
     normalized, aspect_ratio, mp_edge_normalized = _normalize_singular_values(
         singular_values,
         (4, 2),
-        normalization_mode='init_theory',
         theoretical_mp_scale_sq=2.0,
     )
 
@@ -211,7 +210,7 @@ def test_available_steps_and_indices_uses_union_and_marks_missing_width_steps():
     assert got == [(1000, [0, None]), (10000, [1, 0]), (100000, [2, 1]), (1000000, [None, 2])]
 
 
-def test_load_saved_step_spectra_reuses_saved_normalized_values(tmp_path: Path):
+def test_load_saved_step_spectra_recomputes_with_legacy_theoretical_scale(tmp_path: Path):
     spectra_dir = tmp_path / "spectra"
     width_dir = spectra_dir / "width_64"
     width_dir.mkdir(parents=True)
@@ -235,13 +234,12 @@ def test_load_saved_step_spectra_reuses_saved_normalized_values(tmp_path: Path):
         width=64,
         step=10000,
         unfolding_mode="square",
-        normalization_mode='empirical',
     )
 
     assert loaded is not None
     singular_values, normalized, aspect_ratio, mp_edge_normalized, unfolded_shape, *_ = loaded
     assert np.allclose(singular_values, [[4.0, 3.0]])
-    assert np.allclose(normalized, [[9.0, 7.0]])
+    assert np.allclose(normalized, [[4.0 / np.sqrt(2.0), 3.0 / np.sqrt(2.0)]], atol=1e-6)
     assert np.isclose(aspect_ratio, 2.0)
     assert np.isclose(mp_edge_normalized, 2.41421356)
     assert unfolded_shape == (4, 2)
@@ -272,7 +270,6 @@ def test_load_saved_step_spectra_init_theory_recomputes_with_theoretical_scale(t
         width=64,
         step=10000,
         unfolding_mode="square",
-        normalization_mode='init_theory',
     )
 
     assert loaded is not None

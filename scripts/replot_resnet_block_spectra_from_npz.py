@@ -13,10 +13,11 @@ from scripts.plot_resnet_block_spectra import (
     _default_output_dir,
     _legacy_saved_theoretical_mp_scale_sq,
     _normalize_singular_values,
-    _reference_edge_normalized,
     _plot_aggregate_figure,
     _plot_member_grid,
+    _plot_outlier_stat_by_step,
     _plot_step_aggregate_figure,
+    _reference_edge_normalized,
 )
 
 
@@ -40,16 +41,10 @@ def parse_args() -> argparse.Namespace:
         help='Filename stem used for rebuilt PDF names.',
     )
     parser.add_argument('--bins', type=int, default=60, help='Histogram bins for the bulk panel.')
-    parser.add_argument(
-        '--normalization-mode',
-        choices=['empirical', 'init_theory'],
-        default='init_theory',
-        help='How to normalize singular values on the x-axis.',
-    )
     return parser.parse_args()
 
 
-def _load_bundle(width_dir: str, normalization_mode: str) -> WidthSpectrumBundle:
+def _load_bundle(width_dir: str) -> WidthSpectrumBundle:
     width_name = os.path.basename(width_dir)
     width = int(width_name.split('_')[-1])
     npz_paths = sorted(
@@ -86,33 +81,21 @@ def _load_bundle(width_dir: str, normalization_mode: str) -> WidthSpectrumBundle
         singular_values = np.asarray(data['singular_values'], dtype=np.float32)
         current_unfolded_shape = tuple(int(x) for x in np.asarray(data['unfolded_shape']).tolist())
         current_layer = tuple(str(data['layer_path'].tolist()).split('/'))
-        if (
-            normalization_mode == 'empirical'
-            and 'normalized_singular_values' in data.files
-            and 'aspect_ratio' in data.files
-            and 'mp_edge_normalized' in data.files
-        ):
-            normalized = np.asarray(data['normalized_singular_values'], dtype=np.float32)
-            current_aspect_ratio = float(np.asarray(data['aspect_ratio']).item())
-            edge = float(np.asarray(data['mp_edge_normalized']).item())
-        else:
-            theoretical_mp_scale_sq = None
-            if normalization_mode == 'init_theory':
-                if 'theoretical_mp_scale_sq' in data.files:
-                    raw_scale = float(np.asarray(data['theoretical_mp_scale_sq']).item())
-                    if np.isfinite(raw_scale) and raw_scale > 0.0:
-                        theoretical_mp_scale_sq = raw_scale
-                if theoretical_mp_scale_sq is None:
-                    theoretical_mp_scale_sq = _legacy_saved_theoretical_mp_scale_sq(
-                        current_unfolded_shape,
-                        current_layer,
-                    )
-            normalized, current_aspect_ratio, edge = _normalize_singular_values(
-                singular_values,
+        theoretical_mp_scale_sq = None
+        if 'theoretical_mp_scale_sq' in data.files:
+            raw_scale = float(np.asarray(data['theoretical_mp_scale_sq']).item())
+            if np.isfinite(raw_scale) and raw_scale > 0.0:
+                theoretical_mp_scale_sq = raw_scale
+        if theoretical_mp_scale_sq is None:
+            theoretical_mp_scale_sq = _legacy_saved_theoretical_mp_scale_sq(
                 current_unfolded_shape,
-                normalization_mode=normalization_mode,
-                theoretical_mp_scale_sq=theoretical_mp_scale_sq,
+                current_layer,
             )
+        normalized, current_aspect_ratio, edge = _normalize_singular_values(
+            singular_values,
+            current_unfolded_shape,
+            theoretical_mp_scale_sq=theoretical_mp_scale_sq,
+        )
         reference_edge = _reference_edge_normalized(current_unfolded_shape, current_aspect_ratio)
         normalized_by_step.append(normalized)
         tail_by_step.append(normalized[normalized > reference_edge].astype(np.float32))
@@ -173,7 +156,7 @@ def main() -> None:
     if not width_dirs:
         raise RuntimeError(f'No width_* directories found under {spectra_dir}')
 
-    bundles = [_load_bundle(width_dir, args.normalization_mode) for width_dir in width_dirs]
+    bundles = [_load_bundle(width_dir) for width_dir in width_dirs]
     for bundle in bundles:
         out_path = _plot_member_grid(bundle, output_dir=output_dir, bins=args.bins, artifact_stem=args.artifact_stem)
         print(f'Wrote member-wise figure for width {bundle.width}: {out_path}')
@@ -182,6 +165,20 @@ def main() -> None:
     print(f'Wrote aggregate figure: {aggregate_path}')
     step_aggregate_path = _plot_step_aggregate_figure(bundles, output_dir=output_dir, bins=args.bins, artifact_stem=args.artifact_stem)
     print(f'Wrote step-wise aggregate figure: {step_aggregate_path}')
+    outlier_count_path = _plot_outlier_stat_by_step(
+        bundles,
+        output_dir=output_dir,
+        artifact_stem=args.artifact_stem,
+        normalize_by_width=False,
+    )
+    print(f'Wrote outlier-count figure: {outlier_count_path}')
+    outlier_fraction_path = _plot_outlier_stat_by_step(
+        bundles,
+        output_dir=output_dir,
+        artifact_stem=args.artifact_stem,
+        normalize_by_width=True,
+    )
+    print(f'Wrote outlier-fraction figure: {outlier_fraction_path}')
 
 
 if __name__ == '__main__':

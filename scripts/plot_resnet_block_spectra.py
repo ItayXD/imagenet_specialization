@@ -24,6 +24,8 @@ import matplotlib.pyplot as plt
 
 _RESNET_BLOCK_RE = re.compile(r'^ResNetBlock_(\d+)$')
 _DIGIT_RE = re.compile(r'(\d+)')
+_WIDTH_DIR_RE = re.compile(r'^width_(\d+)$')
+_STEP_FILE_RE = re.compile(r'^step_(\d+)\.npz$')
 @dataclass
 class WidthSpectrumBundle:
     width: int
@@ -97,12 +99,6 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument('--widths', type=int, nargs='*', default=None, help='Optional list of widths to analyze.')
     parser.add_argument('--bins', type=int, default=60, help='Histogram bins for the bulk panel.')
-    parser.add_argument(
-        '--normalization-mode',
-        choices=['empirical', 'init_theory'],
-        default='init_theory',
-        help='How to normalize singular values on the x-axis.',
-    )
     return parser.parse_args()
 
 
@@ -144,6 +140,37 @@ def _load_analysis_helpers():
         _resolve_width_dirs,
         _restore_state_checkpoint,
     )
+
+
+def _discover_cached_width_steps(spectra_dir: str) -> dict[int, list[int]]:
+    by_width: dict[int, list[int]] = {}
+    if not os.path.isdir(spectra_dir):
+        return by_width
+    for name in sorted(os.listdir(spectra_dir)):
+        width_match = _WIDTH_DIR_RE.match(name)
+        if width_match is None:
+            continue
+        width = int(width_match.group(1))
+        width_dir = os.path.join(spectra_dir, name)
+        if not os.path.isdir(width_dir):
+            continue
+        steps: list[int] = []
+        for child in sorted(os.listdir(width_dir)):
+            step_match = _STEP_FILE_RE.match(child)
+            if step_match is None:
+                continue
+            steps.append(int(step_match.group(1)))
+        if steps:
+            by_width[width] = sorted(steps)
+    return dict(sorted(by_width.items()))
+
+
+def _cached_source_run_id(spectra_dir: str, width: int, step: int) -> str:
+    npz_path = os.path.join(spectra_dir, f'width_{width}', f'step_{step}.npz')
+    data = np.load(npz_path, allow_pickle=False)
+    if 'source_run_id' not in data.files:
+        return ''
+    return str(data['source_run_id'].tolist())
 
 
 def _iter_mapping_items(node) -> list[tuple[str, object]]:
@@ -232,22 +259,13 @@ def _unfold_kernel(kernel, unfolding_mode: str) -> np.ndarray:
 def _normalize_singular_values(
     singular_values: np.ndarray,
     unfolded_shape: tuple[int, int],
-    normalization_mode: str = 'empirical',
-    theoretical_mp_scale_sq: float | None = None,
+    theoretical_mp_scale_sq: float,
 ) -> tuple[np.ndarray, float, float]:
     num_rows, num_cols = map(int, unfolded_shape)
     if num_rows <= 0 or num_cols <= 0:
         raise ValueError(f'Invalid unfolded shape for normalization: {unfolded_shape}.')
     aspect_ratio = float(num_rows) / float(num_cols)
-    if normalization_mode == 'empirical':
-        sum_sq_singular_values = float(np.sum(np.square(singular_values, dtype=np.float32)))
-        mp_scale_sq = sum_sq_singular_values / float(num_rows)
-    elif normalization_mode == 'init_theory':
-        if theoretical_mp_scale_sq is None:
-            raise ValueError('theoretical_mp_scale_sq is required for init_theory normalization.')
-        mp_scale_sq = float(theoretical_mp_scale_sq)
-    else:
-        raise ValueError(f'Unsupported normalization mode: {normalization_mode}')
+    mp_scale_sq = float(theoretical_mp_scale_sq)
     if mp_scale_sq <= 0.0:
         raise ValueError('Encountered non-positive MP normalization scale while normalizing the spectrum.')
     normalized = singular_values / np.sqrt(mp_scale_sq)
@@ -325,7 +343,6 @@ else:
 def _member_spectrum_summary(
     kernel,
     unfolding_mode: str,
-    normalization_mode: str = 'empirical',
 ) -> tuple[np.ndarray, np.ndarray, float, float, tuple[int, int]]:
     if jnp is None:
         raise RuntimeError('JAX is required to compute spectra from checkpoints.')
@@ -338,13 +355,10 @@ def _member_spectrum_summary(
         gram = _gram_matrix_right(unfolded_jax)
     eigenvalues = np.asarray(_eigvalsh_nonnegative(gram), dtype=np.float32)
     singular_values = np.sqrt(eigenvalues).astype(np.float32)
-    theoretical_mp_scale_sq = None
-    if normalization_mode == 'init_theory':
-        theoretical_mp_scale_sq = _theoretical_mp_scale_sq_from_kernel(kernel, tuple(unfolded.shape))
+    theoretical_mp_scale_sq = _theoretical_mp_scale_sq_from_kernel(kernel, tuple(unfolded.shape))
     normalized, aspect_ratio, mp_edge_normalized = _normalize_singular_values(
         singular_values,
         tuple(unfolded.shape),
-        normalization_mode=normalization_mode,
         theoretical_mp_scale_sq=theoretical_mp_scale_sq,
     )
     return singular_values.astype(np.float32), normalized.astype(np.float32), aspect_ratio, mp_edge_normalized, tuple(unfolded.shape)
@@ -437,6 +451,7 @@ def _save_step_spectra(
         width=np.int32(width),
         images_seen=np.int64(step),
         source_run_id=np.asarray(source_run_id),
+        normalization_mode=np.asarray('init_theory'),
         unfolding_mode=np.asarray(unfolding_mode),
         layer_path=np.asarray('/'.join(layer_path)),
         member_labels=np.asarray(member_labels),
@@ -454,45 +469,32 @@ def _load_saved_step_spectra(
     width: int,
     step: int,
     unfolding_mode: str,
-    normalization_mode: str,
 ) -> tuple[np.ndarray, np.ndarray, float, float, tuple[int, int], str, tuple[str, ...], list[str]] | None:
     npz_path = os.path.join(spectra_dir, f'width_{width}', f'step_{step}.npz')
     if not os.path.exists(npz_path):
         return None
     data = np.load(npz_path, allow_pickle=False)
-    if 'singular_values' not in data.files or 'unfolded_shape' not in data.files or 'unfolding_mode' not in data.files:
+    if 'singular_values' not in data.files or 'unfolded_shape' not in data.files:
         return None
-    saved_unfolding_mode = str(data['unfolding_mode'].tolist())
+    saved_unfolding_mode = str(data['unfolding_mode'].tolist()) if 'unfolding_mode' in data.files else unfolding_mode
     if saved_unfolding_mode != unfolding_mode:
         return None
     singular_values = np.asarray(data['singular_values'], dtype=np.float32)
     unfolded_shape = tuple(int(x) for x in np.asarray(data['unfolded_shape']).tolist())
     source_run_id = str(data['source_run_id'].tolist())
     layer_path = tuple(str(data['layer_path'].tolist()).split('/'))
-    if (
-        normalization_mode == 'empirical'
-        and 'normalized_singular_values' in data.files
-        and 'aspect_ratio' in data.files
-        and 'mp_edge_normalized' in data.files
-    ):
-        normalized = np.asarray(data['normalized_singular_values'], dtype=np.float32)
-        aspect_ratio = float(np.asarray(data['aspect_ratio']).item())
-        mp_edge_normalized = float(np.asarray(data['mp_edge_normalized']).item())
-    else:
-        theoretical_mp_scale_sq = None
-        if normalization_mode == 'init_theory':
-            if 'theoretical_mp_scale_sq' in data.files:
-                raw_scale = float(np.asarray(data['theoretical_mp_scale_sq']).item())
-                if np.isfinite(raw_scale) and raw_scale > 0.0:
-                    theoretical_mp_scale_sq = raw_scale
-            if theoretical_mp_scale_sq is None:
-                theoretical_mp_scale_sq = _legacy_saved_theoretical_mp_scale_sq(unfolded_shape, layer_path)
-        normalized, aspect_ratio, mp_edge_normalized = _normalize_singular_values(
-            singular_values,
-            unfolded_shape,
-            normalization_mode=normalization_mode,
-            theoretical_mp_scale_sq=theoretical_mp_scale_sq,
-        )
+    theoretical_mp_scale_sq = None
+    if 'theoretical_mp_scale_sq' in data.files:
+        raw_scale = float(np.asarray(data['theoretical_mp_scale_sq']).item())
+        if np.isfinite(raw_scale) and raw_scale > 0.0:
+            theoretical_mp_scale_sq = raw_scale
+    if theoretical_mp_scale_sq is None:
+        theoretical_mp_scale_sq = _legacy_saved_theoretical_mp_scale_sq(unfolded_shape, layer_path)
+    normalized, aspect_ratio, mp_edge_normalized = _normalize_singular_values(
+        singular_values,
+        unfolded_shape,
+        theoretical_mp_scale_sq=theoretical_mp_scale_sq,
+    )
     member_labels = [str(x) for x in data['member_labels'].tolist()]
     return (
         singular_values,
@@ -595,16 +597,20 @@ def _style_spectrum_axes(
 
 def _build_width_bundle(
     width: int,
-    width_dir: str,
+    width_dir: str | None,
     source_run_id: str,
     spectra_dir: str,
     layer_selection: str,
-    normalization_mode: str,
 ) -> WidthSpectrumBundle:
-    _collect_target_steps, _, _, _list_group_dirs, _, _, _ = _load_analysis_helpers()
     unfolding_mode = _unfolding_mode_for_layer_selection(layer_selection)
-    group_dirs = _list_group_dirs(width_dir)
-    common_steps = _collect_target_steps(group_dirs)
+    group_dirs: list[str] = []
+    if width_dir is None:
+        cached_steps = _discover_cached_width_steps(spectra_dir).get(int(width), [])
+        common_steps = list(cached_steps)
+    else:
+        _collect_target_steps, _, _, _list_group_dirs, _, _, _ = _load_analysis_helpers()
+        group_dirs = _list_group_dirs(width_dir)
+        common_steps = _collect_target_steps(group_dirs)
     if not common_steps:
         raise RuntimeError(f'Width {width} has no common checkpoints across groups.')
 
@@ -631,7 +637,6 @@ def _build_width_bundle(
             width=width,
             step=step,
             unfolding_mode=unfolding_mode,
-            normalization_mode=normalization_mode,
         )
         if cached is not None:
             (
@@ -652,6 +657,8 @@ def _build_width_bundle(
             if member_labels is None:
                 member_labels = cached_member_labels
         else:
+            if width_dir is None:
+                raise RuntimeError(f'Cached spectra for width {width} step {step} are missing, and no checkpoint directory is available.')
             member_params, step_member_labels = _collect_member_params(group_dirs, step, progress_label)
             if not member_params:
                 raise RuntimeError(f'No member parameters restored for width {width} at step {step}.')
@@ -675,7 +682,6 @@ def _build_width_bundle(
                 singular_values, normalized, member_aspect_ratio, member_mp_edge, member_unfolded_shape = _member_spectrum_summary(
                     kernel,
                     unfolding_mode=unfolding_mode,
-                    normalization_mode=normalization_mode,
                 )
                 spectra_rows.append(singular_values)
                 normalized_rows.append(normalized)
@@ -709,7 +715,7 @@ def _build_width_bundle(
                 theoretical_mp_scale_sq=_theoretical_mp_scale_sq_from_kernel(
                     _path_get(member_params[0], layer_path + ('kernel',)),
                     current_unfolded_shape,
-                ) if normalization_mode == 'init_theory' else None,
+                ),
             )
 
             del member_params
@@ -1030,22 +1036,110 @@ def _plot_member_grid(bundle: WidthSpectrumBundle, output_dir: str, bins: int, a
     return out_path
 
 
+def _plot_outlier_stat_by_step(
+    bundles: list[WidthSpectrumBundle],
+    output_dir: str,
+    artifact_stem: str,
+    *,
+    normalize_by_width: bool,
+) -> str:
+    if not bundles:
+        raise ValueError('No width bundles were provided for outlier-count plotting.')
+
+    available_steps = _available_steps_and_indices(bundles)
+    if not available_steps:
+        raise ValueError('No checkpoints are available for outlier-count plotting.')
+
+    fig, ax = plt.subplots(figsize=(8.5, 5.5))
+    width_colors = plt.cm.viridis(np.linspace(0.15, 0.85, len(bundles), dtype=np.float64))
+
+    for width_idx, bundle in enumerate(bundles):
+        xs: list[int] = []
+        mean_values: list[float] = []
+        std_values: list[float] = []
+        threshold = float(bundle.mp_edge_normalized)
+        scale = float(bundle.width) if normalize_by_width else 1.0
+
+        for step, step_indices in available_steps:
+            step_idx = step_indices[width_idx]
+            if step_idx is None:
+                continue
+            step_values = np.asarray(bundle.normalized_by_step[step_idx], dtype=np.float32)
+            if step_values.ndim != 2 or step_values.shape[0] == 0:
+                continue
+            counts = np.sum(step_values > threshold, axis=1, dtype=np.int32)
+            xs.append(int(step))
+            mean_values.append(float(np.mean(counts, dtype=np.float64) / scale))
+            std_values.append(float(np.std(counts, dtype=np.float64, ddof=0) / scale))
+
+        if not xs:
+            continue
+
+        ax.errorbar(
+            np.asarray(xs, dtype=np.float64),
+            np.asarray(mean_values, dtype=np.float64),
+            yerr=np.asarray(std_values, dtype=np.float64),
+            color=width_colors[width_idx],
+            marker='o',
+            markersize=4.5,
+            linewidth=1.8,
+            elinewidth=1.1,
+            capsize=2.5,
+            label=f'W={bundle.width}',
+        )
+
+    ax.set_xscale('log')
+    ax.set_xlabel('P')
+    if normalize_by_width:
+        ax.set_ylabel('Outlier fraction above MP edge')
+        ax.set_title('Outlier fraction vs P by width')
+        suffix = 'outlier_fraction_by_p'
+    else:
+        ax.set_ylabel('Outlier count above MP edge')
+        ax.set_title('Outlier count vs P by width')
+        suffix = 'outlier_count_by_p'
+    ax.grid(True, which='both', alpha=0.25)
+    ax.legend(loc='center left', bbox_to_anchor=(1.02, 0.5), fontsize=8)
+    fig.tight_layout()
+
+    out_path = os.path.join(output_dir, f'{artifact_stem}_{suffix}.pdf')
+    fig.savefig(out_path, bbox_inches='tight')
+    plt.close(fig)
+    return out_path
+
+
 def main() -> None:
     args = parse_args()
-    _, _, _, _, _, _resolve_width_dirs, _ = _load_analysis_helpers()
     spectra_dir = os.path.abspath(args.spectra_dir) if args.spectra_dir else _default_spectra_dir(args.artifact_stem)
     output_dir = os.path.abspath(args.output_dir) if args.output_dir else _default_output_dir(args.artifact_stem)
     os.makedirs(spectra_dir, exist_ok=True)
     os.makedirs(output_dir, exist_ok=True)
 
-    width_dirs, width_sources = _resolve_width_dirs(
-        base_save_dir=args.base_save_dir,
-        run_id=args.run_id,
-        resolution_mode=args.run_id_resolution,
-        requested_widths=args.widths,
-    )
+    cached_width_steps = _discover_cached_width_steps(spectra_dir)
+    requested_widths = set(args.widths) if args.widths else None
+    width_dirs: dict[int, str | None]
+    width_sources: dict[int, str]
+    if cached_width_steps:
+        width_dirs = {
+            int(width): None
+            for width in cached_width_steps
+            if requested_widths is None or int(width) in requested_widths
+        }
+        width_sources = {
+            int(width): _cached_source_run_id(spectra_dir, int(width), cached_width_steps[int(width)][0])
+            for width in width_dirs
+        }
+    else:
+        _, _, _, _, _, _resolve_width_dirs, _ = _load_analysis_helpers()
+        resolved_width_dirs, width_sources = _resolve_width_dirs(
+            base_save_dir=args.base_save_dir,
+            run_id=args.run_id,
+            resolution_mode=args.run_id_resolution,
+            requested_widths=args.widths,
+        )
+        width_dirs = {int(width): width_dir for width, width_dir in resolved_width_dirs.items()}
     if not width_dirs:
-        raise RuntimeError('No width directories were resolved for the requested run.')
+        raise RuntimeError('No width directories or cached spectra were resolved for the requested run.')
 
     bundles: list[WidthSpectrumBundle] = []
     for width, width_dir in sorted(width_dirs.items()):
@@ -1056,7 +1150,6 @@ def main() -> None:
             source_run_id=source_run_id,
             spectra_dir=spectra_dir,
             layer_selection=args.layer_selection,
-            normalization_mode=args.normalization_mode,
         )
         bundles.append(bundle)
         member_plot_path = _plot_member_grid(bundle, output_dir=output_dir, bins=args.bins, artifact_stem=args.artifact_stem)
@@ -1066,6 +1159,20 @@ def main() -> None:
     print(f'Wrote aggregate figure: {aggregate_path}')
     step_aggregate_path = _plot_step_aggregate_figure(bundles, output_dir=output_dir, bins=args.bins, artifact_stem=args.artifact_stem)
     print(f'Wrote step-wise aggregate figure: {step_aggregate_path}')
+    outlier_count_path = _plot_outlier_stat_by_step(
+        bundles,
+        output_dir=output_dir,
+        artifact_stem=args.artifact_stem,
+        normalize_by_width=False,
+    )
+    print(f'Wrote outlier-count figure: {outlier_count_path}')
+    outlier_fraction_path = _plot_outlier_stat_by_step(
+        bundles,
+        output_dir=output_dir,
+        artifact_stem=args.artifact_stem,
+        normalize_by_width=True,
+    )
+    print(f'Wrote outlier-fraction figure: {outlier_fraction_path}')
     print(f'Wrote raw spectra under: {spectra_dir}')
 
 
