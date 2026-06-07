@@ -1,0 +1,9 @@
+Width 512: selected exchangeability_job64077150 with 12/16 metric files.
+P=10000: width 64 has non-positive widest-subtracted loss -0.00325521; skipped in delta plots.
+P=10000: width 128 has non-positive widest-subtracted loss -0.00130208; skipped in delta plots.
+P=10000: width 256 has non-positive widest-subtracted loss -0.00227865; skipped in delta plots.
+P=100000: width 128 has non-positive widest-subtracted loss -0.0263672; skipped in delta plots.
+P=100000: width 256 has non-positive widest-subtracted loss -0.0265299; skipped in delta plots.
+P=193069: width 128 has non-positive widest-subtracted loss -0.0208333; skipped in delta plots.
+P=268269: width 128 has non-positive widest-subtracted loss -0.0276693; skipped in delta plots.
+P=372759: width 256 has non-positive widest-subtracted loss -0.0242513; skipped in delta plots.

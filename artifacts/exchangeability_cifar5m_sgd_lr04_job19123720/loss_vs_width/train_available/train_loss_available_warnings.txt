@@ -1,0 +1,16 @@
+P=10000: width 128 has non-positive widest-subtracted loss -0.0263672; skipped in delta plots.
+P=21544: width 32 has non-positive widest-subtracted loss -0.0429688; skipped in delta plots.
+P=21544: width 64 has non-positive widest-subtracted loss -0.0187988; skipped in delta plots.
+P=46415: width 64 has non-positive widest-subtracted loss -0.0299377; skipped in delta plots.
+P=46415: width 128 has non-positive widest-subtracted loss -0.032135; skipped in delta plots.
+P=46415: width 256 has non-positive widest-subtracted loss -0.063385; skipped in delta plots.
+P=100000: width 32 has non-positive widest-subtracted loss -0.0105591; skipped in delta plots.
+P=100000: width 64 has non-positive widest-subtracted loss -0.0575562; skipped in delta plots.
+P=100000: width 128 has non-positive widest-subtracted loss -0.0825806; skipped in delta plots.
+P=100000: width 256 has non-positive widest-subtracted loss -0.0470581; skipped in delta plots.
+P=138949: width 64 has non-positive widest-subtracted loss -0.0559235; skipped in delta plots.
+P=138949: width 128 has non-positive widest-subtracted loss -0.084549; skipped in delta plots.
+P=138949: width 256 has non-positive widest-subtracted loss -0.0666656; skipped in delta plots.
+P=268269: width 256 has non-positive widest-subtracted loss -0.0300674; skipped in delta plots.
+P=517947: width 256 has non-positive widest-subtracted loss -0.00439072; skipped in delta plots.
+P=3727593: width 128 has non-positive widest-subtracted loss -0.000144958; skipped in delta plots.

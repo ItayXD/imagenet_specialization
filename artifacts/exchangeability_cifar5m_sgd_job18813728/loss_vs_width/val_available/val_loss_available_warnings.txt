@@ -1,0 +1,10 @@
+Width 512: selected exchangeability_cifar5m_sgd_job18813728 with 15/16 metric files.
+P=10000: width 256 has non-positive widest-subtracted loss -0.00431315; skipped in delta plots.
+P=21544: width 256 has non-positive widest-subtracted loss -0.000813802; skipped in delta plots.
+P=1930698: width 128 has non-positive widest-subtracted loss -0.0027181; skipped in delta plots.
+P=1930698: width 256 has non-positive widest-subtracted loss -0.000642904; skipped in delta plots.
+P=2682695: width 256 has non-positive widest-subtracted loss -0.0050293; skipped in delta plots.
+P=3727593: width 256 has non-positive widest-subtracted loss -0.00973307; skipped in delta plots.
+P=5000000: width 64 has non-positive widest-subtracted loss -0.0194661; skipped in delta plots.
+P=5000000: width 128 has non-positive widest-subtracted loss -0.0736654; skipped in delta plots.
+P=5000000: width 256 has non-positive widest-subtracted loss -0.00835775; skipped in delta plots.

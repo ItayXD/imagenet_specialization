@@ -1,0 +1,6 @@
+width,run_id,job_id,metrics_count,metadata_count,expected_groups
+32,exchangeability_job63832312,63832312,4,4,4
+64,exchangeability_job63961088,63961088,4,4,4
+128,exchangeability_job64077077,64077077,4,4,4
+256,exchangeability_job64077103,64077103,8,8,8
+512,exchangeability_job64077150,64077150,12,12,16

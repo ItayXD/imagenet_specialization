@@ -1,0 +1,6 @@
+width,run_id,job_id,metrics_count,metadata_count,expected_groups
+32,exchangeability_cifar5m_sgd_job18813728,18813728,4,4,4
+64,exchangeability_cifar5m_sgd_job18813728,18813728,4,4,4
+128,exchangeability_cifar5m_sgd_job18813728,18813728,4,4,4
+256,exchangeability_cifar5m_sgd_job18813728,18813728,8,8,8
+512,exchangeability_cifar5m_sgd_job18813728,18813728,15,15,16
