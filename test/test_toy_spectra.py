@@ -44,7 +44,7 @@ def test_muon_update_spectral_norm_width_independent():
         update = eta * core.muon_scale(rows, cols) * np.asarray(core.msign_full(G))
         spec_norm = np.linalg.svd(update, compute_uv=False)[0]
         normalized = spec_norm / np.sqrt(cols)
-        expected = eta * (1.0 + np.sqrt(rows / cols))
+        expected = eta * np.sqrt(max(1.0, rows / cols))
         np.testing.assert_allclose(normalized, expected, rtol=1e-4)
 
 

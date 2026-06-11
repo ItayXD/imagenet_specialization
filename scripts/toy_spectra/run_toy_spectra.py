@@ -210,8 +210,11 @@ def main(argv=None) -> None:
         losses = np.asarray(losses, dtype=np.float64)
         if not np.all(np.isfinite(losses)):
             first_bad = int(np.argmax(~np.isfinite(losses)))
-            raise SystemExit(
-                f"[{args.run_id}] non-finite loss at step {step + first_bad}")
+            write_row({"samples_seen": (step + first_bad + 1) * args.batch_size,
+                       "step": step + first_bad + 1, "diverged": True})
+            print(f"[{args.run_id}] DIVERGED: non-finite loss at step "
+                  f"{step + first_bad}; stopping early.", flush=True)
+            break
         for i, loss in enumerate(losses):
             ema = loss if ema is None else ema_decay * ema + (1 - ema_decay) * loss
             global_step = step + i + 1

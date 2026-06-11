@@ -15,12 +15,17 @@ All weights init N(0, 1) (mean-field convention, cf. muon_spectra_toy/).
 Optimizers:
   sgd:  muP -- one global lr = eta_sgd * gamma0^2 * N on every layer.
   muon: idealized Muon on hidden layers, momentum-free with exact
-        orthogonalization: dW = -eta_muon * (sqrt(fan_in) + sqrt(fan_out)) *
-        msign(grad); readout always via muP SGD. This deliberately differs
-        from optax.contrib.scale_by_muon (momentum + Newton-Schulz): the
-        idealization is part of the experiment design. In MP-normalized units
-        the update spectral norm is eta_muon * (1 + sqrt(aspect)), i.e.
-        width-independent by construction.
+        orthogonalization: dW = -eta_muon * sqrt(max(fan_in, fan_out)) *
+        msign(grad); readout always via muP SGD. The scale matches the
+        ImageNet runs (src/experiment/training/online_momentum.py):
+        optax.contrib.scale_by_muon applies sqrt(max(1, fan_out/fan_in)) at
+        constant lr across widths (the muP wrapper contributes scale 1 for
+        doubly width-scaled layers); translating from standard
+        parameterization (init var 1/fan_in) to this module's mean-field one
+        (W = sqrt(fan_in) * W_standard) multiplies that by sqrt(fan_in).
+        Momentum and Newton-Schulz are deliberately idealized away. In
+        MP-normalized units the update spectral norm is
+        eta_muon * sqrt(max(1, aspect)), width-independent for square layers.
 
 Spectra conventions follow scripts/plot_resnet_block_spectra.py and
 muon_spectra_toy/width_spectra_toy.py: normalized sigma = sigma /
@@ -95,7 +100,7 @@ def msign_from_factors(L: jnp.ndarray, R: jnp.ndarray) -> jnp.ndarray:
 
 
 def muon_scale(rows: int, cols: int) -> float:
-    return math.sqrt(rows) + math.sqrt(cols)
+    return math.sqrt(max(rows, cols))
 
 
 # ------------------------------------------------------------------- targets

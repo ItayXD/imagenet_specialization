@@ -89,16 +89,17 @@ def build_rows(args: argparse.Namespace) -> list[dict]:
 
     if args.lr_grid:
         grid = [float(v) for v in args.lr_grid.split(",")]
-        N, seed = min(args.widths), 0
+        seed = 0
         for model in args.models:
-            for lr in grid:
-                if "sgd" in args.optimizers:
-                    add(model, "sgd", N, seed, lr,
-                        "", run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
-                if "muon" in args.optimizers:
-                    add(model, "muon", N, seed,
-                        getattr(args, f"lr_sgd_{model}"), lr,
-                        run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
+            for N in args.widths:
+                for lr in grid:
+                    if "sgd" in args.optimizers:
+                        add(model, "sgd", N, seed, lr,
+                            "", run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
+                    if "muon" in args.optimizers:
+                        add(model, "muon", N, seed,
+                            getattr(args, f"lr_sgd_{model}"), lr,
+                            run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
     else:
         for model in args.models:
             for optimizer in args.optimizers:
