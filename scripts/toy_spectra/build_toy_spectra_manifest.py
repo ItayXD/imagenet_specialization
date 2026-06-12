@@ -29,10 +29,10 @@ FIELDNAMES = [
     "p_num", "p_targets", "eval_batch_size",
 ]
 
-# Tuned by the N=128 LR pilot (job 21586270): best final eval loss, ties
-# broken toward the smallest LR on the plateau.
-DEFAULT_LR_SGD = {"lin3": 0.01, "nonlin2": 0.1, "nonlin3": 0.1}
-DEFAULT_ETA_MUON = {"lin3": 0.003, "nonlin2": 0.003, "nonlin3": 0.003}
+# Tuned by the two-width (N=128/1024) LR sweep, job 21619339, with the
+# ImageNet-aligned Muon scale: best final eval loss stable at both widths.
+DEFAULT_LR_SGD = {"lin3": 0.01, "nonlin2": 0.3, "nonlin3": 0.3}
+DEFAULT_ETA_MUON = {"lin3": 0.003, "nonlin2": 0.01, "nonlin3": 0.01}
 
 
 def parse_args(argv=None) -> argparse.Namespace:
