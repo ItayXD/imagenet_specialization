@@ -29,10 +29,11 @@ FIELDNAMES = [
     "p_num", "p_targets", "eval_batch_size",
 ]
 
-# Tuned by the two-width (N=128/1024) LR sweep, job 21619339, with the
-# ImageNet-aligned Muon scale: best final eval loss stable at both widths.
-DEFAULT_LR_SGD = {"lin3": 0.01, "nonlin2": 0.3, "nonlin3": 0.3}
-DEFAULT_ETA_MUON = {"lin3": 0.003, "nonlin2": 0.01, "nonlin3": 0.01}
+# Tuned by the two-width (N=128/1024) refined LR sweeps at B=1024
+# (jobs 21683757 + 21689087, ImageNet-aligned Muon scale): every minimum
+# interior/bracketed; picks are the most width-balanced performant points.
+DEFAULT_LR_SGD = {"lin3": 0.01, "nonlin2": 3.0, "nonlin3": 0.3}
+DEFAULT_ETA_MUON = {"lin3": 0.001, "nonlin2": 0.0068, "nonlin3": 0.0068}
 
 
 def parse_args(argv=None) -> argparse.Namespace:

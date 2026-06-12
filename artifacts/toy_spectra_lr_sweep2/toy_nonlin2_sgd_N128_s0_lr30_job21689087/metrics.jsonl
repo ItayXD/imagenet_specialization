@@ -1,0 +1,2 @@
+{"samples_seen": 0, "step": 0, "train_loss": 2.251598358154297, "train_loss_ema": 2.251598358154297, "eval_loss": 2.3909993171691895, "lr": 34560.0, "checkpoint": true}
+{"samples_seen": 5120, "step": 5, "diverged": true}
