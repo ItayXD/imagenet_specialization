@@ -51,8 +51,12 @@ def parse_args(argv=None) -> argparse.Namespace:
         p.add_argument(f"--eta-muon-{model}", type=float,
                        default=DEFAULT_ETA_MUON[model])
     p.add_argument("--lr-grid", type=str, default="",
-                   help="Comma-separated grid; if set, build an LR pilot "
-                        "(smallest width, seed 0) instead of the sweep.")
+                   help="Comma-separated grid; if set, build an LR-tuning "
+                        "manifest (seed 0, all --widths) instead of the sweep.")
+    p.add_argument("--lr-grid-sgd", type=str, default="",
+                   help="Optimizer-specific grid override for sgd.")
+    p.add_argument("--lr-grid-muon", type=str, default="",
+                   help="Optimizer-specific grid override for muon.")
     p.add_argument("--d", type=int, default=core.D_DEFAULT)
     p.add_argument("--M", type=int, default=core.M_DEFAULT)
     p.add_argument("--gamma0", type=float, default=core.GAMMA0_DEFAULT)
@@ -87,19 +91,23 @@ def build_rows(args: argparse.Namespace) -> list[dict]:
             **common,
         })
 
-    if args.lr_grid:
-        grid = [float(v) for v in args.lr_grid.split(",")]
+    grids = {
+        opt: [float(v) for v in (getattr(args, f"lr_grid_{opt}") or
+                                 args.lr_grid).split(",")]
+        for opt in args.optimizers
+        if (getattr(args, f"lr_grid_{opt}") or args.lr_grid)
+    }
+    if grids:
         seed = 0
         for model in args.models:
             for N in args.widths:
-                for lr in grid:
-                    if "sgd" in args.optimizers:
-                        add(model, "sgd", N, seed, lr,
-                            "", run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
-                    if "muon" in args.optimizers:
-                        add(model, "muon", N, seed,
-                            getattr(args, f"lr_sgd_{model}"), lr,
-                            run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
+                for lr in grids.get("sgd", []):
+                    add(model, "sgd", N, seed, lr,
+                        "", run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
+                for lr in grids.get("muon", []):
+                    add(model, "muon", N, seed,
+                        getattr(args, f"lr_sgd_{model}"), lr,
+                        run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
     else:
         for model in args.models:
             for optimizer in args.optimizers:

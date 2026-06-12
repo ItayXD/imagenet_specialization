@@ -1,0 +1,6 @@
+{"samples_seen": 0, "step": 0, "train_loss": 2.2383768558502197, "train_loss_ema": 2.2383768558502197, "eval_loss": 2.380283832550049, "lr": 27648.0, "checkpoint": true}
+{"samples_seen": 10240, "step": 10, "train_loss": 3.149207854270935, "train_loss_ema": 2.3030988024654757, "eval_loss": 2.3635237216949463, "lr": 27648.0, "checkpoint": true}
+{"samples_seen": 16384, "step": 16, "train_loss": 8.477348804473877, "train_loss_ema": 2.669809357412206, "eval_loss": 2.3530755043029785, "lr": 27648.0, "checkpoint": true}
+{"samples_seen": 24576, "step": 24, "train_loss": 10.046500533819199, "train_loss_ema": 3.2485789927487407, "eval_loss": 2.288421630859375, "lr": 27648.0, "checkpoint": true}
+{"samples_seen": 36864, "step": 36, "train_loss": 5873866291.448673, "train_loss_ema": 704863956.7888299, "eval_loss": Infinity, "lr": 27648.0, "checkpoint": true}
+{"samples_seen": 37888, "step": 37, "diverged": true}
