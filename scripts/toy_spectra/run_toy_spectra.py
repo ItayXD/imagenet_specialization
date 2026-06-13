@@ -123,17 +123,18 @@ def save_spectra(run_dir: Path, args, params, samples_seen: int, step: int,
         "run_id": args.run_id, "model": args.model, "optimizer": args.optimizer,
         "N": np.int32(args.N), "d": np.int32(args.d), "M": np.int32(args.M),
         "seed": np.int32(args.seed), "target_seed": np.int32(args.target_seed),
-        "gamma0": np.float32(args.gamma0), "init_var": np.float32(1.0),
+        "gamma0": np.float32(args.gamma0), "init_var": np.float32(1.0 / args.N),
         "samples_seen": np.int64(samples_seen), "step": np.int64(step),
         "train_loss_recent": np.float32(train_loss_recent),
         "train_loss_ema": np.float32(train_loss_ema),
         "eval_loss": np.float32(eval_loss_value),
         "eval_batch_size": np.int32(args.eval_batch_size),
-        "lr_sgd": np.float32(args.lr * args.gamma0**2 * args.N),
+        "lr_sgd": np.float32(args.lr),
         "eta_muon": np.float32(args.eta_muon),
     }
     for layer in core.TRACKED_LAYERS[args.model]:
-        sv, sv_norm, aspect, mp_edge = core.normalized_svals(params[layer])
+        sv, sv_norm, aspect, mp_edge = core.normalized_svals(
+            params[layer], 1.0 / args.N)
         payload[f"sv_{layer}"] = sv.astype(np.float32)
         payload[f"sv_norm_{layer}"] = sv_norm.astype(np.float32)
         payload[f"shape_{layer}"] = np.asarray(params[layer].shape, np.int32)
@@ -150,7 +151,7 @@ def main(argv=None) -> None:
     run_dir = Path(args.output_dir) / run_name
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    lr_sgd = args.lr * args.gamma0**2 * args.N
+    lr_sgd = args.lr  # muP abc-form: width-independent learning rate (c = 0)
     metadata = {
         **{k: v for k, v in vars(args).items() if k not in ("manifest", "index")},
         "lr_sgd_effective": lr_sgd,

@@ -36,20 +36,25 @@ def test_msign_from_factors_wide_fallback():
     np.testing.assert_allclose(sv, 1.0, atol=1e-4)
 
 
-def test_muon_update_spectral_norm_width_independent():
+def test_muon_update_spectral_norm_is_spectral_scaling():
+    # Muon scale is sqrt(fan_out/fan_in) and nothing else; msign has unit
+    # singular values, so the update's spectral norm = eta * sqrt(rows/cols).
     rng = np.random.default_rng(2)
     eta = 0.01
-    for rows, cols in [(16, 8), (64, 32), (128, 64)]:
+    for rows, cols in [(16, 8), (64, 32), (128, 64), (64, 128)]:
         G = jnp.asarray(rng.standard_normal((rows, cols)), jnp.float32)
         update = eta * core.muon_scale(rows, cols) * np.asarray(core.msign_full(G))
         spec_norm = np.linalg.svd(update, compute_uv=False)[0]
-        normalized = spec_norm / np.sqrt(cols)
-        expected = eta * np.sqrt(max(1.0, rows / cols))
-        np.testing.assert_allclose(normalized, expected, rtol=1e-4)
+        expected = eta * np.sqrt(rows / cols)
+        np.testing.assert_allclose(spec_norm, expected, rtol=1e-4)
+    # Square layer => scale exactly 1.
+    np.testing.assert_allclose(core.muon_scale(256, 256), 1.0, rtol=1e-6)
 
 
 @pytest.mark.parametrize("model", core.MODELS)
 def test_mup_sgd_function_update_width_consistent(model):
+    # muP abc-form: a single width-INDEPENDENT lr gives a width-consistent
+    # function-space move (no gamma0^2 * N factor).
     d, M, B, gamma0, eta = 32, 4, 64, 3.0, 0.01
     target = core.make_target(model, 123, d, M)
     X = jax.random.normal(jax.random.PRNGKey(7), (d, B))
@@ -59,11 +64,11 @@ def test_mup_sgd_function_update_width_consistent(model):
         f0 = core.forward(model, params, X, gamma0)
         new, _ = core.train_chunk(model, "sgd", params, target,
                                   jax.random.PRNGKey(9), 0, 1, B, gamma0,
-                                  eta * gamma0**2 * N, 0.0)
+                                  eta, 0.0)
         f1 = core.forward(model, new, X, gamma0)
         deltas[N] = float(jnp.sqrt(jnp.mean((f1 - f0) ** 2)))
     ratio = deltas[256] / deltas[64]
-    assert 0.25 < ratio < 4.0, f"Delta-f ratio {ratio} not width-consistent"
+    assert 0.4 < ratio < 2.5, f"Delta-f ratio {ratio} not width-consistent"
 
 
 def test_make_p_targets():

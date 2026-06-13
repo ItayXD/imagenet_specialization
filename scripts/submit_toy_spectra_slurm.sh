@@ -2,11 +2,20 @@
 #SBATCH --job-name=toy-spectra
 #SBATCH --account=kempner_pehlevan_lab
 #SBATCH --partition=kempner
-#SBATCH --array=0-71
+#SBATCH --array=0-13
 #SBATCH --gpus=1
 #SBATCH --cpus-per-task=4
-#SBATCH --mem=16G
+#SBATCH --mem=8G
 #SBATCH --time=1:00:00
+
+# Resource notes: toy_spectra rows are tiny relative to the ImageNet jobs.
+# `--gpus=1` / `--partition=kempner` / `--account=kempner_pehlevan_lab` follow
+# the repo convention (see submit_resnet_block_spectra_slurm.sh etc.). The user
+# runs at most 14 jobs in parallel, so each array task processes a CHUNK of
+# manifest rows (ROWS_PER_TASK, default 1): pick ROWS_PER_TASK and
+# --array=0-(ceil(TOTAL/ROWS_PER_TASK)-1) so ~14 (or fewer) tasks cover the
+# whole manifest, each doing minutes of real work instead of seconds. mem/time
+# are trimmed well below the ImageNet template since these MLP runs use <1G.
 
 set -euo pipefail
 
@@ -47,14 +56,19 @@ if [[ ${TOTAL_ROWS} -le 0 ]]; then
 fi
 
 TASK_ID="${SLURM_ARRAY_TASK_ID:-0}"
-if [[ ${TASK_ID} -ge ${TOTAL_ROWS} ]]; then
-  echo "Skipping task_id=${TASK_ID}; manifest only has ${TOTAL_ROWS} rows."
+ROWS_PER_TASK="${ROWS_PER_TASK:-1}"
+ROW_START=$(( TASK_ID * ROWS_PER_TASK ))
+ROW_END=$(( ROW_START + ROWS_PER_TASK - 1 ))
+if [[ ${ROW_END} -ge ${TOTAL_ROWS} ]]; then ROW_END=$(( TOTAL_ROWS - 1 )); fi
+if [[ ${ROW_START} -ge ${TOTAL_ROWS} ]]; then
+  echo "Skipping task_id=${TASK_ID}; row_start=${ROW_START} >= ${TOTAL_ROWS} rows."
   exit 0
 fi
 
 LOG_DIR="${SLURM_LOG_DIR:-${BASE_SAVE_DIR}/slurm_logs}"
 mkdir -p "${LOG_DIR}"
 exec > >(tee -a "${LOG_DIR}/toy_spectra_${SLURM_ARRAY_JOB_ID}_${TASK_ID}.out") 2>&1
+echo "Task ${TASK_ID} handling rows ${ROW_START}..${ROW_END} (ROWS_PER_TASK=${ROWS_PER_TASK})"
 
 if [[ -z "${UV_PROJECT_ENVIRONMENT:-}" ]]; then
   echo "UV_PROJECT_ENVIRONMENT is not set." >&2
@@ -76,13 +90,13 @@ echo "Saving under BASE_SAVE_DIR=${BASE_SAVE_DIR}"
 cd "${ROOT_DIR}"
 
 RUN_ID_SUFFIX="${RUN_ID_SUFFIX-job${SLURM_ARRAY_JOB_ID}}"
-CMD=(uv run python scripts/toy_spectra/run_toy_spectra.py
-     --manifest "${MANIFEST_PATH}" --index "${TASK_ID}"
-     --output-dir "${BASE_SAVE_DIR}")
-if [[ -n "${RUN_ID_SUFFIX}" ]]; then
-  echo "Using run_id suffix: ${RUN_ID_SUFFIX}"
-  CMD+=(--run-id-suffix "${RUN_ID_SUFFIX}")
-else
-  echo "RUN_ID_SUFFIX empty; using run_id from manifest."
-fi
-"${CMD[@]}"
+for (( idx=ROW_START; idx<=ROW_END; idx++ )); do
+  echo "=== row ${idx} ==="
+  CMD=(uv run python scripts/toy_spectra/run_toy_spectra.py
+       --manifest "${MANIFEST_PATH}" --index "${idx}"
+       --output-dir "${BASE_SAVE_DIR}")
+  if [[ -n "${RUN_ID_SUFFIX}" ]]; then
+    CMD+=(--run-id-suffix "${RUN_ID_SUFFIX}")
+  fi
+  "${CMD[@]}"
+done

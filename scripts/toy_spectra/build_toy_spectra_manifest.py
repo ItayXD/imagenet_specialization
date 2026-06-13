@@ -110,16 +110,16 @@ def build_rows(args: argparse.Namespace) -> list[dict]:
         if (getattr(args, f"lr_grid_{opt}") or args.lr_grid)
     }
     if grids:
-        seed = 0
         for model in args.models:
             for N in args.widths:
-                for lr in grids.get("sgd", []):
-                    add(model, "sgd", N, seed, lr,
-                        "", run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
-                for lr in grids.get("muon", []):
-                    add(model, "muon", N, seed,
-                        getattr(args, f"readout_lr_muon_{model}"), lr,
-                        run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
+                for seed in args.seeds:
+                    for lr in grids.get("sgd", []):
+                        add(model, "sgd", N, seed, lr, "",
+                            run_id=f"toy_{model}_sgd_N{N}_s{seed}_lr{lr:g}")
+                    for lr in grids.get("muon", []):
+                        add(model, "muon", N, seed,
+                            getattr(args, f"readout_lr_muon_{model}"), lr,
+                            run_id=f"toy_{model}_muon_N{N}_s{seed}_eta{lr:g}")
     else:
         for model in args.models:
             for optimizer in args.optimizers:
