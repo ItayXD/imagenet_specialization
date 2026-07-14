@@ -442,6 +442,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--eval-batch-size', type=int, default=250)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--num-bins', type=int, default=24, help='Log-spaced bins over k for fits.')
+    parser.add_argument('--compute-dtype', choices=['float32', 'bfloat16'], default='float32',
+                        help='Forward-pass precision. float32 (default) evaluates the trained '
+                             'weights with ~1e-5 reconstruction error and a clean covariance tail; '
+                             'bfloat16 reproduces the model\'s training-time inference noise.')
     parser.add_argument('--trunc-list', type=int, nargs='*', default=None,
                         help='Retained-PC counts m. Default is a log-spaced schedule.')
     parser.add_argument('--output-dir', required=True)
@@ -455,6 +459,11 @@ def _default_base_save_dir(dataset: str) -> str:
                               '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_cifar5m')
     return os.environ.get('IMAGENET_BASE_SAVE_DIR',
                           '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet')
+
+
+def _chw_to_hwc(tensor):
+    """Channels-first -> channels-last (module-level so it is picklable under spawn)."""
+    return tensor.permute(1, 2, 0)
 
 
 def _make_loader(dataset_obj, batch_size: int, num_workers: int):
@@ -493,7 +502,7 @@ def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int
         raise ValueError('IMAGENET_FOLDER must be set for imagenet analysis.')
     ImageFolder, ImageNet, transforms = _load_imagenet_torchvision()
     normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-    channels_last = transforms.Lambda(lambda x: x.permute(1, 2, 0))
+    channels_last = transforms.Lambda(_chw_to_hwc)
     val_transform = transforms.Compose([
         transforms.Resize(256),
         transforms.CenterCrop(224),
@@ -573,6 +582,18 @@ def _classifier_weight_and_bias(member: dict) -> tuple[np.ndarray, np.ndarray, f
     return weight_eff, bias, divisor
 
 
+def _cast_tree(tree, dtype):
+    """Cast floating-point leaves of a variable tree to dtype; leave integers untouched."""
+    import jax
+    import jax.numpy as jnp
+
+    def _cast(leaf):
+        leaf = jnp.asarray(leaf)
+        return leaf.astype(dtype) if jnp.issubdtype(leaf.dtype, jnp.floating) else leaf
+
+    return jax.tree_util.tree_map(_cast, tree)
+
+
 def main() -> None:
     args = parse_args()
     import jax.numpy as jnp
@@ -630,16 +651,18 @@ def main() -> None:
     print(f'restored {len(members)} member(s); using member 0 from {state_dir}')
 
     spec = get_dataset_spec(dataset)
+    compute_dtype = jnp.float32 if args.compute_dtype == 'float32' else jnp.bfloat16
+    print(f'compute_dtype={args.compute_dtype}')
     model = ResNet18(
         num_classes=spec.num_classes,
         num_filters=width,
-        param_dtype=jnp.bfloat16,
+        param_dtype=compute_dtype,
         stem_type=spec.stem_type,
     )
     variables = {
-        'params': member['params'],
-        'batch_stats': member['batch_stats'],
-        'mup': member['mup'],
+        'params': _cast_tree(member['params'], compute_dtype),
+        'batch_stats': _cast_tree(member['batch_stats'], compute_dtype),
+        'mup': _cast_tree(member['mup'], compute_dtype),
     }
 
     loader = _build_eval_loader(
