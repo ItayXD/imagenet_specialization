@@ -143,6 +143,83 @@ def _perm_eta_pvalue(values: np.ndarray, groups: np.ndarray, n_perm: int,
     return eta_obs, (count + 1) / (n_perm + 1)
 
 
+def _leverage_difficulty_figure(lev, lev_pos, acc, c, p, run_label, fmt, output_dir) -> dict:
+    """Distribution of leverage n_i and difficulty, to motivate a model for L.
+
+    Heterogeneous leverage with Gaussian entries is consistent with row-scaled random
+    vectors L_ij ~ N(0, sigma_i^2), i.e. each class has a gain sigma_i^2 = n_i; if log(n_i)
+    is ~Gaussian the gains are lognormal.
+    """
+    dist: dict = {'leverage_mean': float(lev.mean()), 'leverage_cv': float(lev.std() / lev.mean())}
+    try:
+        from scipy import stats as sps
+        dist['leverage_skew'] = float(sps.skew(lev_pos))
+        dist['leverage_kurtosis'] = float(sps.kurtosis(lev_pos))
+        dist['log_leverage_skew'] = float(sps.skew(np.log(lev_pos)))
+        _, ks_norm = sps.kstest((lev_pos - lev_pos.mean()) / lev_pos.std(), 'norm')
+        z_log = (np.log(lev_pos) - np.log(lev_pos).mean()) / np.log(lev_pos).std()
+        _, ks_lognorm = sps.kstest(z_log, 'norm')
+        dist['ks_p_normal'] = float(ks_norm)
+        dist['ks_p_lognormal'] = float(ks_lognorm)
+        if acc is not None:
+            dist['accuracy_skew'] = float(sps.skew(acc[np.isfinite(acc)]))
+    except Exception:
+        sps = None
+
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 8.6))
+    ax = axes[0, 0]
+    ax.hist(lev_pos, bins=45, density=True, color='steelblue', alpha=0.8, label='leverage $n_i$')
+    if sps is not None:
+        xs = np.linspace(lev_pos.min(), lev_pos.max(), 200)
+        ax.plot(xs, sps.norm.pdf(xs, lev_pos.mean(), lev_pos.std()), 'k--', label='normal fit')
+        shape, loc, scale = sps.lognorm.fit(lev_pos, floc=0)
+        ax.plot(xs, sps.lognorm.pdf(xs, shape, loc, scale), 'crimson', lw=2, label='lognormal fit')
+    ax.axvline(p / c, color='0.4', ls=':', label=f'Haar mean p/C={p / c:.2f}')
+    ax.set_xlabel(r'leverage $n_i=\|L_{i\cdot}\|^2$'); ax.set_ylabel('density')
+    ax.set_title('Leverage distribution'); ax.legend(fontsize=8)
+
+    ax = axes[0, 1]
+    ax.hist(np.log(lev_pos), bins=45, density=True, color='seagreen', alpha=0.8)
+    if sps is not None:
+        lx = np.log(lev_pos)
+        xs = np.linspace(lx.min(), lx.max(), 200)
+        ax.plot(xs, sps.norm.pdf(xs, lx.mean(), lx.std()), 'k--', label='normal fit')
+        ax.legend(fontsize=8)
+    ax.set_xlabel(r'$\log n_i$'); ax.set_ylabel('density')
+    ax.set_title(f'log-leverage (KS p: normal={dist.get("ks_p_normal", float("nan")):.2g}, '
+                 f'lognormal={dist.get("ks_p_lognormal", float("nan")):.2g})')
+
+    ax = axes[1, 0]
+    if acc is not None:
+        ax.hist(acc[np.isfinite(acc)], bins=40, color='indigo', alpha=0.8)
+        ax.set_xlabel('class accuracy'); ax.set_ylabel('number of classes')
+        ax.set_title(f'Difficulty distribution (skew={dist.get("accuracy_skew", float("nan")):.2f})')
+    else:
+        ax.axis('off')
+
+    ax = axes[1, 1]
+    if acc is not None:
+        ax.scatter(lev, acc, s=8, alpha=0.4, color='0.5')
+        edges = np.quantile(lev, np.linspace(0, 1, 13))
+        centers, means = [], []
+        for b in range(12):
+            m = (lev >= edges[b]) & (lev <= edges[b + 1])
+            if m.sum() > 3:
+                centers.append(lev[m].mean()); means.append(np.nanmean(acc[m]))
+        ax.plot(centers, means, 'crimson', marker='o', lw=2, label='binned mean')
+        r, _ = _pearson_spearman(lev, acc)
+        ax.set_xlabel(r'leverage $n_i$'); ax.set_ylabel('class accuracy')
+        ax.set_title(fr'leverage vs accuracy ($r={r:.2f}$)'); ax.legend(fontsize=8)
+    else:
+        ax.axis('off')
+    fig.suptitle(f'Leverage & difficulty across classes — {run_label}', fontsize=13)
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    fig.savefig(os.path.join(output_dir, f'fig_left_leverage_difficulty.{fmt}'),
+                bbox_inches='tight', dpi=200)
+    plt.close(fig)
+    return dist
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-dir', required=True)
@@ -175,8 +252,8 @@ def main() -> None:
     stats = _row_stats(left, s2)  # n (leverage), pr, e (energy)
 
     class_names = _load_class_names(args.class_names)
-    if class_names is not None and len(class_names) < c:
-        class_names = None
+    if class_names is not None and len(class_names) != c:
+        class_names = None  # names file must match this run's class count (e.g. not cifar)
     superclass, super_counts = (_superclasses(class_names) if class_names else (None, {}))
 
     written = []
@@ -288,8 +365,28 @@ def main() -> None:
         fig.tight_layout(rect=(0, 0, 1, 0.96))
         _save(fig, 'fig_left_by_superclass')
 
+    # ============ How are leverage and difficulty distributed across classes? ==========
+    # Motivates a generative model for L: heterogeneous leverage + Gaussian entries is
+    # consistent with row-scaled random vectors L_ij ~ N(0, sigma_i^2), i.e. each class has
+    # a "gain" sigma_i^2 = n_i. If log(n_i) is ~Gaussian, the gains are lognormal.
+    lev = stats['n']
+    lev_pos = lev[np.isfinite(lev) & (lev > 0)]
+    # Degenerate when C <= p (rows exactly unit-norm, e.g. cifar C=10): no leverage spread.
+    lev_ok = c >= 30 and lev_pos.size > 20 and float(np.std(lev_pos)) > 1e-9
+    dist_stats = _leverage_difficulty_figure(lev, lev_pos, acc, c, p, run_label, args.format,
+                                             output_dir) if lev_ok else {}
+    if lev_ok:
+        written.append(os.path.join(output_dir, f'fig_left_leverage_difficulty.{args.format}'))
+        print(f'leverage: mean={dist_stats["leverage_mean"]:.3f} CV={dist_stats["leverage_cv"]:.2f} '
+              f'skew={dist_stats.get("leverage_skew", float("nan")):.2f}; '
+              f'KS p normal={dist_stats.get("ks_p_normal", float("nan")):.2g} '
+              f'lognormal={dist_stats.get("ks_p_lognormal", float("nan")):.2g}')
+    else:
+        print('leverage/difficulty distribution: skipped (C<=p or no leverage spread)')
+
     # ---- save summary + tables ----
     summary = {
+        'leverage_difficulty': dist_stats,
         'run_label': run_label, 'num_classes': int(c), 'num_modes': int(p),
         'ipr': {'haar_median_neff': haar_neff, 'localized_mode_count': int(localized.size),
                 'neff_localized_threshold': neff_lo},
