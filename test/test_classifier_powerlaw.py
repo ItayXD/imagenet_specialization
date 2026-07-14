@@ -184,6 +184,20 @@ def test_per_class_accuracy_and_ce_toy():
     assert np.isnan(acc3[2]) and np.isnan(ce3[2])
 
 
+def test_left_descriptors_bounded_and_width_robust():
+    from scripts.analyze_classifier_left_descriptors import compute_descriptors
+
+    rng = np.random.default_rng(0)
+    for c, d in [(100, 40), (60, 200)]:  # under-complete (D<C) and complete (D>=C)
+        desc = compute_descriptors(rng.normal(size=(c, d)))
+        for key in ('kappa', 'gtop', 'mass_centroid'):
+            v = desc[key][np.isfinite(desc[key])]
+            assert np.all(v >= -1e-9) and np.all(v <= 1 + 1e-9), f'{key} out of [0,1]'
+        # When D>=C the rows are unit-norm -> leverage degenerates to 1.
+        if d >= c:
+            assert np.allclose(desc['leverage'], 1.0, atol=1e-6)
+
+
 def test_eta_squared_and_perm_tests():
     from scripts.analyze_classifier_left_structure import (
         _eta_squared, _perm_corr_pvalue, _perm_eta_pvalue,
