@@ -198,40 +198,35 @@ def _profile_over(band: np.ndarray, lo: int, hi: int) -> np.ndarray:
         return np.nanmean(band[lo:hi, :], axis=0)
 
 
-def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 8,
-                        slope_tol: float = 0.2) -> tuple:
-    """Find the ONSET of departure from the low-i power law (an early, not best-split, break).
-
-    Estimate the low-i slope from the first ``min_seg`` points, then grow the low window and
-    flag the break at the first point where the growing-window log-log slope has drifted
-    more than ``slope_tol`` from that low-i slope. This detects where the initial power law
-    *stops holding* (earlier) rather than the best two-line split (which lands late).
-    Returns (breakpoint_x, low_fit, high_fit).
+def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 8) -> tuple:
+    """Continuous segmented (broken-power-law) fit in log-log: two lines that MEET at the
+    break. Grid-search the breakpoint minimizing the total residual; because the fit is
+    continuous, the break lands at the genuine change of slope rather than early (noise) or
+    late (as a disjoint two-line split does). Returns (breakpoint_x, low_fit, high_fit) with
+    a shared model R^2 on each side.
     """
     m = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
     x, y = x[m], y[m]
     if x.size < 2 * min_seg + 1:
         return None, _loglog_fit(x, y), {'slope': float('nan'), 'r2': float('nan')}
     order = np.argsort(x)
-    x, y = x[order], y[order]
-    lx, ly = np.log(x), np.log(y)
-    base_slope = float(np.polyfit(lx[:min_seg], ly[:min_seg], 1)[0])
-    # Break = first index where the growing-window slope departs from the low-i slope by
-    # more than slope_tol for THREE consecutive windows (robust to single noisy points).
-    break_i = None
-    run = 0
-    for bi in range(min_seg + 1, x.size - min_seg + 1):
-        slope = float(np.polyfit(lx[:bi], ly[:bi], 1)[0])
-        if abs(slope - base_slope) > slope_tol:
-            run += 1
-            if run >= 3:
-                break_i = bi - 3
-                break
-        else:
-            run = 0
-    if break_i is None or break_i < min_seg or break_i > x.size - min_seg:
-        return None, _loglog_fit(x, y), {'slope': float('nan'), 'r2': float('nan')}
-    return float(x[break_i]), _loglog_fit(x[:break_i], y[:break_i]), _loglog_fit(x[break_i:], y[break_i:])
+    lx, ly = np.log(x[order]), np.log(y[order])
+    ss_tot = float(np.sum((ly - ly.mean()) ** 2))
+
+    best = None  # (sse, xb, a, b1, b2)
+    for bi in range(min_seg, lx.size - min_seg):
+        xb = lx[bi]
+        hinge = np.maximum(0.0, lx - xb)
+        A = np.column_stack([np.ones_like(lx), lx, hinge])
+        coef, _, _, _ = np.linalg.lstsq(A, ly, rcond=None)
+        sse = float(np.sum((A @ coef - ly) ** 2))
+        if best is None or sse < best[0]:
+            best = (sse, xb, coef[0], coef[1], coef[1] + coef[2])
+    sse, xb, a, b1, b2 = best
+    r2 = 1.0 - sse / ss_tot if ss_tot > 0 else float('nan')
+    low = {'slope': float(b1), 'intercept': float(a), 'r2': float(r2)}
+    high = {'slope': float(b2), 'intercept': float(a + b1 * xb - b2 * xb), 'r2': float(r2)}
+    return float(np.exp(xb)), low, high
 
 
 def _shape_crossover(x: np.ndarray, exp_r2: np.ndarray, gauss_r2: np.ndarray) -> float:
@@ -323,9 +318,11 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
     gauss_r2_arr = np.asarray(gauss_r2_i)
     width_fit = _loglog_fit(width_bx, width_by)
 
-    # (1) Is ell(i) a power law only up to a break, then something else? Piecewise fit:
-    # scan a breakpoint and fit a power law on each side; also fit the low-i segment alone.
-    breakpoint, low_fit, high_fit = _piecewise_powerlaw(width_bx, width_by)
+    # (1) Is w(i) a power law only up to a break, then something else? Fit the break on
+    # LOG-BINNED medians so high-i scatter (band dissolving into the floor) does not jerk
+    # the breakpoint around; the raw points are still shown in the figure.
+    wbin_x, wbin_y = _log_binned_median(width_bx, width_by, num_bins=20)
+    breakpoint, low_fit, high_fit = _piecewise_powerlaw(wbin_x, wbin_y)
     # (2) Shape crossover: the i at which the cross-section stops being exponential-preferred
     # and becomes Gaussian-preferred (a sharp change of transverse shape along the diagonal).
     shape_cross = _shape_crossover(width_bx, exp_r2_arr, gauss_r2_arr)
@@ -336,6 +333,7 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
         'offsets': offsets, 'floor': floor, 'positions': positions,
         'amp': amp, 'excess_amp': excess_amp,
         'amp_bx': amp_bx, 'amp_by': amp_by, 'width_bx': width_bx, 'width_by': width_by,
+        'wbin_x': wbin_x, 'wbin_y': wbin_y,
         'exp_r2': exp_r2_arr, 'gauss_r2': gauss_r2_arr,
         'long_fit': long_fit, 'width_fit': width_fit, 'shape_verdict': shape_verdict,
         'breakpoint': breakpoint, 'low_fit': low_fit, 'high_fit': high_fit,
@@ -384,8 +382,11 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     # 2. Transverse length ell(i): single fit + two-segment (breakpoint) fit + shape crossover.
     fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.9))
     ax = axes[0]
-    ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), '.', ms=4,
-              color='seagreen', label=r'RMS $w(i)$ (every $i$)')
+    ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), '.', ms=3, alpha=0.35,
+              color='0.6', label=r'RMS $w(i)$ (every $i$)')
+    if res['wbin_x'].size:
+        ax.loglog(res['wbin_x'], np.clip(res['wbin_y'], 1e-30, None), 'o', ms=5,
+                  color='seagreen', label='log-binned median (fit to this)')
     bp, lo_fit, hi_fit = res['breakpoint'], res['low_fit'], res['high_fit']
     if bp is not None and np.isfinite(lo_fit['slope']):
         xlo = np.linspace(res['width_bx'].min(), bp, 40)
@@ -401,7 +402,7 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
                    label=f"exp→gauss i~{res['shape_crossover']:.0f}")
     ax.set_xlabel('diagonal position $i$')
     ax.set_ylabel(r'transverse RMS width $w(i)$ (shape-agnostic)')
-    ax.set_title('width vs position (piecewise, onset break)')
+    ax.set_title('width vs position (continuous segmented fit)')
     ax.grid(True, which='both', alpha=0.25)
     ax.legend(fontsize=8)
     # Right panel: transverse-shape preference (Gaussian R^2 - exponential R^2) vs i.
