@@ -29,6 +29,8 @@ import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 from matplotlib.colors import LogNorm  # noqa: E402
 
+from scripts.analyze_classifier_powerlaw import robust_capacity_fit  # noqa: E402
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
@@ -157,6 +159,23 @@ def _log_binned_median(x: np.ndarray, y: np.ndarray, num_bins: int = 22) -> tupl
     return np.asarray(cx), np.asarray(cy)
 
 
+def _rms_width(offsets: np.ndarray, profile: np.ndarray) -> float:
+    """Shape-agnostic transverse width: RMS second moment over the above-floor core.
+
+    w = sqrt(sum d^2 e(d) / sum e(d)) with e = floor-subtracted excess. For an exponential
+    core w = sqrt(2) * ell; for a Gaussian core w = sigma. So it tracks the true scale
+    smoothly across the exponential->Gaussian regime change, unlike a fixed-shape fit.
+    """
+    abs_d, excess, floor = _symmetric_excess(offsets, profile)
+    core = _core_mask(excess, floor)
+    d = abs_d[core]
+    e = np.clip(excess[core], 0.0, None)
+    total = float(e.sum())
+    if total <= 0 or d.size < 2:
+        return float('nan')
+    return float(np.sqrt(np.sum(d ** 2 * e) / total))
+
+
 def _hwhm(offsets: np.ndarray, profile: np.ndarray) -> float:
     """Half-width at half-maximum of the floor-subtracted transverse core (shape-agnostic)."""
     abs_d, excess, _ = _symmetric_excess(offsets, profile)
@@ -179,34 +198,40 @@ def _profile_over(band: np.ndarray, lo: int, hi: int) -> np.ndarray:
         return np.nanmean(band[lo:hi, :], axis=0)
 
 
-def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 6) -> tuple:
-    """Find a breakpoint splitting (x,y) into two log-log power-law segments.
+def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 8,
+                        slope_tol: float = 0.2) -> tuple:
+    """Find the ONSET of departure from the low-i power law (an early, not best-split, break).
 
-    Scans candidate breakpoints and picks the one minimizing the combined residual sum of
-    squares of two independent log-log line fits. Returns (breakpoint_x, low_fit, high_fit)
-    where each *_fit is a dict from _loglog_fit; breakpoint_x is None if too few points.
+    Estimate the low-i slope from the first ``min_seg`` points, then grow the low window and
+    flag the break at the first point where the growing-window log-log slope has drifted
+    more than ``slope_tol`` from that low-i slope. This detects where the initial power law
+    *stops holding* (earlier) rather than the best two-line split (which lands late).
+    Returns (breakpoint_x, low_fit, high_fit).
     """
     m = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
     x, y = x[m], y[m]
     if x.size < 2 * min_seg + 1:
         return None, _loglog_fit(x, y), {'slope': float('nan'), 'r2': float('nan')}
+    order = np.argsort(x)
+    x, y = x[order], y[order]
     lx, ly = np.log(x), np.log(y)
-
-    def _sse(a, b):
-        if a.size < 2:
-            return np.inf, (float('nan'), float('nan'))
-        s, c = np.polyfit(a, b, 1)
-        return float(np.sum((b - (s * a + c)) ** 2)), (float(s), float(c))
-
-    best = None
-    for bi in range(min_seg, x.size - min_seg):
-        sse_lo, _ = _sse(lx[:bi], ly[:bi])
-        sse_hi, _ = _sse(lx[bi:], ly[bi:])
-        total = sse_lo + sse_hi
-        if best is None or total < best[0]:
-            best = (total, bi)
-    bi = best[1]
-    return float(x[bi]), _loglog_fit(x[:bi], y[:bi]), _loglog_fit(x[bi:], y[bi:])
+    base_slope = float(np.polyfit(lx[:min_seg], ly[:min_seg], 1)[0])
+    # Break = first index where the growing-window slope departs from the low-i slope by
+    # more than slope_tol for THREE consecutive windows (robust to single noisy points).
+    break_i = None
+    run = 0
+    for bi in range(min_seg + 1, x.size - min_seg + 1):
+        slope = float(np.polyfit(lx[:bi], ly[:bi], 1)[0])
+        if abs(slope - base_slope) > slope_tol:
+            run += 1
+            if run >= 3:
+                break_i = bi - 3
+                break
+        else:
+            run = 0
+    if break_i is None or break_i < min_seg or break_i > x.size - min_seg:
+        return None, _loglog_fit(x, y), {'slope': float('nan'), 'r2': float('nan')}
+    return float(x[break_i]), _loglog_fit(x[:break_i], y[:break_i]), _loglog_fit(x[break_i:], y[break_i:])
 
 
 def _shape_crossover(x: np.ndarray, exp_r2: np.ndarray, gauss_r2: np.ndarray) -> float:
@@ -221,10 +246,11 @@ def _shape_crossover(x: np.ndarray, exp_r2: np.ndarray, gauss_r2: np.ndarray) ->
         return float('nan')
     order = np.argsort(x)
     x, diff = x[order], diff[order]
-    k = min(5, diff.size)
+    k = min(7, diff.size)
     smooth = np.convolve(diff, np.ones(k) / k, mode='same')
-    for i in range(smooth.size):
-        if smooth[i] > 0 and np.all(smooth[i:] >= -1e-3):
+    # First upcrossing: exponential is preferred (diff<0) below, Gaussian (diff>0) above.
+    for i in range(1, smooth.size):
+        if smooth[i - 1] <= 0.0 < smooth[i]:
             return float(x[i])
     return float('nan')
 
@@ -280,14 +306,19 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
         if c in highlight:
             shape_profiles[c] = prof
             shapes[c] = sh
-        if np.isfinite(sh.get('exponential_ell', np.nan)) and sh['best'] != 'undetermined':
-            width_bx_list.append(float(c))
-            ell_i.append(float(sh['exponential_ell']))
-            exp_r2_i.append(float(sh['exponential_r2']))
-            gauss_r2_i.append(float(sh['gaussian_r2']))
-            all_verdicts.append(sh['best'])
+        if sh['best'] != 'undetermined':
+            # Shape-AGNOSTIC width: RMS second moment of the floor-subtracted core. Unlike
+            # the exponential length, this stays meaningful when the cross-section turns
+            # from exponential to Gaussian, so w(i) is not corrupted by a fixed-shape fit.
+            wdt = _rms_width(offsets, prof)
+            if np.isfinite(wdt) and wdt > 0:
+                width_bx_list.append(float(c))
+                ell_i.append(float(wdt))
+                exp_r2_i.append(float(sh['exponential_r2']))
+                gauss_r2_i.append(float(sh['gaussian_r2']))
+                all_verdicts.append(sh['best'])
     width_bx = np.asarray(width_bx_list)
-    width_by = np.asarray(ell_i)  # transverse "width" = exponential length ell(i), dense in i
+    width_by = np.asarray(ell_i)  # transverse "width" = HWHM w(i), shape-agnostic, dense in i
     exp_r2_arr = np.asarray(exp_r2_i)
     gauss_r2_arr = np.asarray(gauss_r2_i)
     width_fit = _loglog_fit(width_bx, width_by)
@@ -354,7 +385,7 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.9))
     ax = axes[0]
     ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), '.', ms=4,
-              color='seagreen', label=r'$\ell(i)$ (every $i$)')
+              color='seagreen', label=r'RMS $w(i)$ (every $i$)')
     bp, lo_fit, hi_fit = res['breakpoint'], res['low_fit'], res['high_fit']
     if bp is not None and np.isfinite(lo_fit['slope']):
         xlo = np.linspace(res['width_bx'].min(), bp, 40)
@@ -369,8 +400,8 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
         ax.axvline(res['shape_crossover'], color='darkorange', ls=':', lw=1.6,
                    label=f"exp→gauss i~{res['shape_crossover']:.0f}")
     ax.set_xlabel('diagonal position $i$')
-    ax.set_ylabel(r'transverse length $\ell(i)$')
-    ax.set_title('length vs position (piecewise)')
+    ax.set_ylabel(r'transverse RMS width $w(i)$ (shape-agnostic)')
+    ax.set_title('width vs position (piecewise, onset break)')
     ax.grid(True, which='both', alpha=0.25)
     ax.legend(fontsize=8)
     # Right panel: transverse-shape preference (Gaussian R^2 - exponential R^2) vs i.
@@ -559,72 +590,78 @@ def _render_r2_heatmap(right_sq: np.ndarray, run_label: str, output_dir: str, fm
     return written
 
 
-def robust_singular_powerlaw(s: np.ndarray) -> dict:
-    """Robust power-law fit s_j ~ j^{-c}, excluding the finite-dimension cliff.
+def robust_singular_powerlaw(s: np.ndarray, num_bins: int = 24) -> dict:
+    """Robust power-law fit s_j ~ j^{-c} over the BULK (head and finite-dimension cliff
+    excluded), so the fitted line actually hugs the data.
 
-    Iteratively drops trailing points that fall far below a Theil-Sen (robust) log-log
-    line — i.e. the smallest singular value(s) on the cliff — then reports the Theil-Sen
-    slope and its confidence interval over the retained bulk. Works for few modes (CIFAR)
-    and many (ImageNet).
+    Many modes (ImageNet): use the seed-and-grow capacity fitter, which auto-selects a
+    clean bulk window [j_lo, j_hi] and returns its exponent. Few modes (CIFAR, ~10): the
+    seed-grow is unreliable, so trim only the collapsed trailing cliff (e.g. the rank-
+    deficient last mode ~1e-7) and OLS-fit the rest.
     """
     s = np.asarray(s, dtype=np.float64)
     s = s[np.isfinite(s) & (s > 0)]
     p = s.size
     j = np.arange(1, p + 1, dtype=np.float64)
-    lx, ly = np.log(j), np.log(s)
-    try:
-        from scipy.stats import theilslopes
-        def _line(a, b):
-            sl, ic, lo, hi = theilslopes(b, a)
-            return float(sl), float(ic), float(lo), float(hi)
-    except Exception:
-        def _line(a, b):
-            sl, ic = np.polyfit(a, b, 1)
-            return float(sl), float(ic), float('nan'), float('nan')
 
-    # Exclude the finite-dimension "cliff": a CONTIGUOUS run of trailing modes that have
-    # collapsed far BELOW the robust Theil-Sen trend (e.g. CIFAR's rank-deficient last mode
-    # ~1e-7, or ImageNet's last few near-zero modes). Only the tail is trimmed -- never the
-    # head -- so a gradually-curving bulk is kept intact (its curvature shows up as R^2).
-    collapse_frac = 0.3
+    def _r2(jlo, jhi, slope, intercept):
+        sel = (j >= jlo) & (j <= jhi)
+        lx, ly = np.log(j[sel]), np.log(s[sel])
+        pred = slope * lx + intercept
+        ss_res = float(np.sum((ly - pred) ** 2))
+        ss_tot = float(np.sum((ly - ly.mean()) ** 2))
+        return 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+
+    if p >= 40:
+        cap = robust_capacity_fit(s, num_bins)
+        j_lo, j_hi = int(cap['k_lo']), int(cap['k_hi'])
+        c, intercept = float(cap['b']), float(cap['intercept'])
+        n_excl = int(p - int(((j >= j_lo) & (j <= j_hi)).sum()))
+        return {'c': c, 'intercept': intercept, 'r2': _r2(j_lo, j_hi, -c, intercept),
+                'j_lo': j_lo, 'j_hi': j_hi, 'n_excluded': n_excl,
+                'method': 'seed-grow bulk', 'j': j, 's': s}
+
+    # Few modes: trim the trailing collapsed cliff, OLS-fit the rest.
+    lx, ly = np.log(j), np.log(s)
     keep = np.ones(p, dtype=bool)
     for _ in range(3):
         idx = np.where(keep)[0]
         if idx.size < 4:
             break
-        sl, ic, _, _ = _line(lx[idx], ly[idx])
+        sl, ic = np.polyfit(lx[idx], ly[idx], 1)
         resid = ly - (sl * lx + ic)
         new_keep = keep.copy()
-        for jj in idx[::-1]:  # scan from the largest kept mode downward
-            if resid[jj] < np.log(collapse_frac):
+        for jj in idx[::-1]:
+            if resid[jj] < np.log(0.3):
                 new_keep[jj] = False
             else:
-                break  # first non-collapsed mode -> stop trimming the tail
+                break
         if int(new_keep.sum()) < 4 or bool(np.all(new_keep == keep)):
             keep = new_keep
             break
         keep = new_keep
     idx = np.where(keep)[0]
-    sl, ic, lo_sl, hi_sl = _line(lx[idx], ly[idx])
-    pred = sl * lx[idx] + ic
-    ss_res = float(np.sum((ly[idx] - pred) ** 2))
-    ss_tot = float(np.sum((ly[idx] - ly[idx].mean()) ** 2))
-    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
-    return {'c': -sl, 'intercept': ic, 'r2': r2, 'c_ci': (-hi_sl, -lo_sl),
+    sl, ic = np.polyfit(lx[idx], ly[idx], 1)
+    return {'c': -float(sl), 'intercept': float(ic), 'r2': _r2(j[idx][0], j[idx][-1], sl, ic),
             'j_lo': int(j[idx][0]), 'j_hi': int(j[idx][-1]), 'n_excluded': int((~keep).sum()),
-            'j': j, 's': s, 'keep': keep}
+            'method': 'cliff-trim OLS', 'j': j, 's': s}
 
 
 def _render_singular(sfit: dict, run_label: str, output_dir: str, fmt: str) -> str:
-    j, s, keep = sfit['j'], sfit['s'], sfit['keep']
+    j, s = sfit['j'], sfit['s']
+    j_lo, j_hi = sfit['j_lo'], sfit['j_hi']
+    inside = (j >= j_lo) & (j <= j_hi)
     fig, ax = plt.subplots(figsize=(6.6, 4.9))
-    ax.loglog(j[keep], s[keep], 'o', ms=4, color='steelblue', label='kept')
-    if (~keep).any():
-        ax.loglog(j[~keep], s[~keep], 'x', ms=8, color='crimson', label='excluded (cliff)')
+    if j_lo > 1:
+        ax.axvspan(0.8, j_lo, color='0.85', alpha=0.5, zorder=0)
+    if j_hi < j[-1]:
+        ax.axvspan(j_hi, j[-1] * 1.05, color='0.85', alpha=0.5, zorder=0)
+    ax.loglog(j[inside], s[inside], 'o', ms=4, color='steelblue', label=f'fit modes [{j_lo},{j_hi}]')
+    ax.loglog(j[~inside], s[~inside], 'x', ms=7, color='crimson', label='excluded (head/cliff)')
     if np.isfinite(sfit['c']):
-        xs = np.linspace(sfit['j_lo'], sfit['j_hi'], 50)
-        ax.loglog(xs, np.exp(sfit['intercept']) * xs ** (-sfit['c']), color='crimson', lw=2.2,
-                  label=fr"Theil-Sen $j^{{-c}}$, $c={sfit['c']:.2f}$ ($R^2={sfit['r2']:.3f}$)")
+        xs = np.linspace(j_lo, j_hi, 60)
+        ax.loglog(xs, np.exp(sfit['intercept']) * xs ** (-sfit['c']), color='crimson', lw=2.4,
+                  label=fr"$j^{{-c}}$, $c={sfit['c']:.2f}$ ($R^2={sfit['r2']:.3f}$, {sfit['method']})")
     ax.set_xlabel('singular mode index $j$')
     ax.set_ylabel(r'singular value $s_j$')
     ax.set_title(f'Classifier singular-value spectrum (robust) — {run_label}')
@@ -668,7 +705,9 @@ def main() -> None:
     # (e.g. CIFAR-5M has C=10 -> 10 modes). Only R data is generated, all under svd/right/.
     if p_modes < 32:
         print(f'only {p_modes} singular modes; skipping the R diagonal-band/Haar analysis '
-              f'(singular-value fit above is still written).')
+              f'(singular-value fit + r^2 heatmap still written).')
+        # The r^2 heatmap is still an informative R visualization even with few modes.
+        written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
         for pth in written:
             print(f'wrote {pth}')
         return
