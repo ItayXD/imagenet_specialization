@@ -184,6 +184,27 @@ def test_per_class_accuracy_and_ce_toy():
     assert np.isnan(acc3[2]) and np.isnan(ce3[2])
 
 
+def test_eta_squared_and_perm_tests():
+    from scripts.analyze_classifier_left_structure import (
+        _eta_squared, _perm_corr_pvalue, _perm_eta_pvalue,
+    )
+
+    rng = np.random.default_rng(0)
+    # Perfect group separation -> eta^2 ~ 1; random grouping -> small eta^2, non-sig.
+    groups = np.array([0] * 50 + [1] * 50)
+    separated = np.concatenate([np.zeros(50), np.ones(50)]) + rng.normal(0, 0.01, 100)
+    assert _eta_squared(separated, groups) > 0.99
+    noise = rng.normal(size=100)
+    eta, p = _perm_eta_pvalue(noise, groups, n_perm=200, rng=rng)
+    assert eta < 0.2 and p > 0.05
+    # Correlated pair -> significant; independent -> not.
+    x = rng.normal(size=200)
+    r_sig, p_sig = _perm_corr_pvalue(x, x + rng.normal(0, 0.3, 200), n_perm=300, rng=rng)
+    r_ns, p_ns = _perm_corr_pvalue(x, rng.normal(size=200), n_perm=300, rng=rng)
+    assert r_sig > 0.8 and p_sig < 0.05
+    assert p_ns > 0.05
+
+
 def test_haar_frame_orthonormal_and_orthogonal_to_ones():
     from scripts.analyze_classifier_left_haar import _haar_frame
 
