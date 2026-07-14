@@ -207,37 +207,40 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
     amp_bx, amp_by = _log_binned_median(positions[long_mask], excess_amp[long_mask])
     long_fit = _loglog_fit(amp_bx, amp_by)
 
-    # Transverse width via HWHM of denoised, log-spaced longitudinal bins (the per-i
-    # cross-sections are individually too noisy). Each bin averages many rows before HWHM.
-    band_lo = max(2, i_lo)
-    band_hi = min(n, i_hi)
-    bin_edges = np.unique(np.round(np.logspace(np.log10(band_lo), np.log10(band_hi), 16)).astype(int))
-    width_centers, width_vals = [], []
-    for e0, e1 in zip(bin_edges[:-1], bin_edges[1:]):
-        prof = _profile_over(band, e0 - 1, e1)
-        w = _hwhm(offsets, prof)
-        if np.isfinite(w) and w > 0:
-            width_centers.append(float(np.sqrt(e0 * e1)))  # geometric bin center
-            width_vals.append(w)
-    width_bx = np.asarray(width_centers)
-    width_by = np.asarray(width_vals)
-    width_fit = _loglog_fit(width_bx, width_by)
-
-    # Transverse shape at a few diagonal positions (longitudinally binned to denoise).
-    probe_centers = [c for c in (16, 32, 64, 128, 256) if c < n - 4]
-    shape_profiles = {}
-    shapes = {}
+    # Densely probe the transverse cross-section at log-spaced diagonal positions, from a
+    # small i up to where the on-diagonal amplitude fades into the floor (only there is a
+    # band resolvable). Each probe averages a longitudinal window of rows to denoise, then
+    # fits the shape and its exponential length ell(i).
+    cross = np.where(amp_by > 2.0 * floor)[0]
+    i_cross = int(amp_bx[cross[-1]]) if cross.size else i_hi
+    i_cross = int(min(i_cross, n // 3))
+    probe_centers = sorted(set(
+        int(round(x)) for x in np.logspace(np.log10(8), np.log10(max(9, i_cross)), 14)
+    ))
+    shape_profiles, shapes = {}, {}
+    ell_i, width_bx_list = [], []
     for c in probe_centers:
         w_bin = max(6, int(0.25 * c))
         prof = _profile_over(band, max(0, c - w_bin), min(n, c + w_bin + 1))
+        sh = _transverse_shape(offsets, prof)
         shape_profiles[c] = prof
-        shapes[c] = _transverse_shape(offsets, prof)
+        shapes[c] = sh
+        if np.isfinite(sh.get('exponential_ell', np.nan)) and sh['best'] != 'undetermined':
+            width_bx_list.append(float(c))
+            ell_i.append(float(sh['exponential_ell']))
+    width_bx = np.asarray(width_bx_list)
+    width_by = np.asarray(ell_i)  # transverse "width" = exponential length ell(i)
+    width_fit = _loglog_fit(width_bx, width_by)
+
+    # Majority transverse-shape verdict across resolvable probes.
+    verdicts = [sh['best'] for sh in shapes.values() if sh['best'] != 'undetermined']
+    shape_verdict = max(set(verdicts), key=verdicts.count) if verdicts else 'undetermined'
 
     return {
         'offsets': offsets, 'floor': floor, 'positions': positions,
         'amp': amp, 'excess_amp': excess_amp,
         'amp_bx': amp_bx, 'amp_by': amp_by, 'width_bx': width_bx, 'width_by': width_by,
-        'long_fit': long_fit, 'width_fit': width_fit,
+        'long_fit': long_fit, 'width_fit': width_fit, 'shape_verdict': shape_verdict,
         'long_range': (i_lo, i_hi), 'shape_profiles': shape_profiles, 'shapes': shapes,
         'n': n, 'num_features': num_features,
     }
@@ -281,14 +284,14 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     # 2. Transverse width w(i) (HWHM, log-binned) vs i, log-log, with power-law fit.
     fig, ax = plt.subplots(figsize=(6.6, 4.9))
     ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), 'o', ms=5,
-              color='seagreen', label='HWHM (log-binned)')
+              color='seagreen', label=r'exponential length $\ell(i)$')
     wf = res['width_fit']
     if np.isfinite(wf['slope']) and res['width_bx'].size:
         xs = np.linspace(res['width_bx'].min(), res['width_bx'].max(), 50)
         ax.loglog(xs, np.exp(wf['intercept']) * xs ** wf['slope'], color='crimson', lw=2.2,
                   label=fr"fit $i^{{q}}$, $q={wf['slope']:.2f}$ ($R^2={wf['r2']:.3f}$)")
     ax.set_xlabel('diagonal position $i$')
-    ax.set_ylabel(r'transverse width HWHM $w(i)$')
+    ax.set_ylabel(r'transverse length $\ell(i)$')
     ax.set_title(f'Transverse band width vs position — {run_label}')
     ax.grid(True, which='both', alpha=0.25)
     ax.legend(fontsize=8)
@@ -343,20 +346,26 @@ def main() -> None:
         else os.path.join(os.path.abspath(args.results_dir), 'svd')
 
     lf, wf = res['long_fit'], res['width_fit']
-    print(f'run={run_label}  n={res["n"]}  floor(1/D)={res["floor"]:.3e}')
+    mean_floor_1_over_D = 1.0 / res['num_features']
+    print(f'run={run_label}  n={res["n"]}  D={res["num_features"]}  '
+          f'median floor={res["floor"]:.3e}  (mean 1/D={mean_floor_1_over_D:.3e})')
     print(f'longitudinal A(i)-floor ~ i^-p : p={-lf["slope"]:.3f} (R^2={lf["r2"]:.3f}, '
           f'range i in [{res["long_range"][0]},{res["long_range"][1]}])')
-    print(f'transverse width w(i) ~ i^q    : q={wf["slope"]:.3f} (R^2={wf["r2"]:.3f})')
+    print(f'transverse shape (majority)    : {res["shape_verdict"]}')
+    print(f'transverse length ell(i) ~ i^q : q={wf["slope"]:.3f} (R^2={wf["r2"]:.3f}, '
+          f'n_probes={res["width_bx"].size})')
     for c, sh in sorted(res['shapes'].items()):
         print(f'  transverse shape @ i~{c:4d}: best={sh["best"]:11s} '
               f'R2[gauss/exp/pow]={sh["gaussian_r2"]:.3f}/{sh["exponential_r2"]:.3f}/{sh["power_r2"]:.3f} '
               f'(sigma={sh.get("gaussian_sigma", float("nan")):.2f}, ell={sh.get("exponential_ell", float("nan")):.2f})')
 
     summary = {
-        'run_label': run_label, 'n': int(res['n']), 'floor': res['floor'],
+        'run_label': run_label, 'n': int(res['n']), 'num_features': int(res['num_features']),
+        'median_floor': res['floor'], 'mean_floor_1_over_D': mean_floor_1_over_D,
         'longitudinal_exponent_p': -lf['slope'], 'longitudinal_r2': lf['r2'],
         'longitudinal_range': list(res['long_range']),
-        'width_exponent_q': wf['slope'], 'width_r2': wf['r2'],
+        'transverse_shape_verdict': res['shape_verdict'],
+        'transverse_length_exponent_q': wf['slope'], 'transverse_length_r2': wf['r2'],
         'transverse_shapes': {int(c): sh for c, sh in res['shapes'].items()},
     }
     os.makedirs(output_dir, exist_ok=True)
