@@ -29,8 +29,10 @@ import seaborn as sns  # noqa: E402
 from matplotlib.colors import LogNorm  # noqa: E402
 
 from scripts.analyze_classifier_powerlaw import (  # noqa: E402
+    _pearson_spearman,
+    fit_source_exponents,
+    robust_capacity_fit,
     robust_loglog_slope,
-    select_bulk_window,
 )
 
 
@@ -55,13 +57,18 @@ def _default_example_modes(num_modes: int) -> list[int]:
 
 
 def compute_svd_source(what_hat: np.ndarray, num_bins: int, k_lo: int, k_hi: int) -> dict:
-    """SVD of What and per-mode right-vector exponents a_j; singular-value exponent c."""
+    """SVD of What: per-mode right-vector exponents a_j, per-class left-vector exponents
+    c_i, and the singular-value spectrum s_j ~ j^{-c}."""
     what_hat = np.asarray(what_hat, dtype=np.float64)
-    # What = L S R^T; rows of vt are the right singular vectors r_j over PC index k.
-    _, singular_values, vt = np.linalg.svd(what_hat, full_matrices=False)
+    # What = L S R^T; rows of vt are the right singular vectors r_j over PC index k;
+    # columns of u are the left singular vectors l_j over class index i.
+    u, singular_values, vt = np.linalg.svd(what_hat, full_matrices=False)
     num_modes, num_features = vt.shape
+    num_classes = u.shape[0]
     positions_k = np.arange(1, num_features + 1, dtype=np.float64)
-    right_sq = vt ** 2  # (p, D); r_jk^2
+    positions_j = np.arange(1, num_modes + 1, dtype=np.float64)
+    right_sq = vt ** 2          # (p, D); r_jk^2
+    left_sq = u ** 2            # (C, p); l_ij^2
 
     a_j = np.full(num_modes, np.nan)
     log_amp_j = np.full(num_modes, np.nan)
@@ -72,29 +79,36 @@ def compute_svd_source(what_hat: np.ndarray, num_bins: int, k_lo: int, k_hi: int
         log_amp_j[j] = fit['intercept']
         rmse_j[j] = fit['log_rmse']
 
-    # Singular-value spectrum s_j ~ j^{-c}, fit over its own bulk window.
-    positions_j = np.arange(1, num_modes + 1, dtype=np.float64)
-    sj_lo, sj_hi, sj_info = select_bulk_window(singular_values)
-    sj_fit = robust_loglog_slope(positions_j, singular_values, num_bins, k_lo=sj_lo, k_hi=sj_hi)
+    # Singular-value spectrum s_j ~ j^{-c}, robust seed-and-grow over the mode axis.
+    sj_cap = robust_capacity_fit(singular_values, num_bins)
+    sj_lo, sj_hi = sj_cap['k_lo'], sj_cap['k_hi']
+
+    # Per-class left-vector exponents c_i from l_ij^2 ~ B_i^2 j^{-2 c_i}, fit over the same
+    # singular-mode bulk window (the meaningful, non-cliff modes).
+    left = fit_source_exponents(left_sq, num_bins, k_lo=sj_lo, k_hi=sj_hi)
 
     return {
         'singular_values': singular_values,
         'right_sq': right_sq,
+        'left_sq': left_sq,
+        'num_classes': int(num_classes),
         'a_j': a_j,
         'log_amp_j': log_amp_j,
         'rmse_j': rmse_j,
+        'c_i': left['a'],           # l_ij^2 ~ j^{-2 c_i}
+        'log_B2_i': left['log_A2'],
+        'c_rmse_i': left['log_rmse'],
         'k_lo': int(k_lo),
         'k_hi': int(k_hi),
-        'sj_exponent_c': -float(sj_fit['slope']),
-        'sj_intercept': float(sj_fit['intercept']),
+        'sj_exponent_c': float(sj_cap['b']),
+        'sj_intercept': float(sj_cap['intercept']),
         'sj_k_lo': int(sj_lo),
         'sj_k_hi': int(sj_hi),
-        'sj_local_slope': float(sj_info['b_bulk']),
     }
 
 
 def _render(result: dict, run_label: str, example_modes: list[int], output_dir: str,
-            fmt: str) -> list[str]:
+            fmt: str, class_accuracy: np.ndarray | None = None) -> list[str]:
     os.makedirs(output_dir, exist_ok=True)
     s = result['singular_values']
     right_sq = result['right_sq']
@@ -195,6 +209,105 @@ def _render(result: dict, run_label: str, example_modes: list[int], output_dir: 
     ax.legend()
     _save(fig, 'fig_svd_singular_values')
 
+    # ---- Left singular vectors l_ij^2 : are classes the same, or easy/hard? ----
+    left_sq = np.asarray(result['left_sq'], dtype=np.float64)   # (C, p)
+    c_i = np.asarray(result['c_i'], dtype=np.float64)
+    log_b2 = np.asarray(result['log_B2_i'], dtype=np.float64)
+    c_rmse = np.asarray(result['c_rmse_i'], dtype=np.float64)
+    num_classes = left_sq.shape[0]
+    sj_lo, sj_hi = result['sj_k_lo'], result['sj_k_hi']
+    bulk_j = np.arange(sj_lo, sj_hi + 1, dtype=np.float64)
+
+    # Rows sorted by c_i so any easy/hard gradient across classes is visible.
+    order = np.argsort(np.where(np.isfinite(c_i), c_i, np.inf))
+    left_sorted = left_sq[order]
+    xt_j = max(1, num_modes // 8)
+    yt_i = max(1, num_classes // 8)
+    for scale in ('linear', 'log'):
+        fig, ax = plt.subplots(figsize=(7.2, 6.0))
+        if scale == 'log':
+            positive = left_sorted[left_sorted > 0]
+            vmin = float(np.quantile(positive, 0.02)) if positive.size else 1e-12
+            vmax = float(left_sorted.max())
+            sns.heatmap(left_sorted, cmap='magma', norm=LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax),
+                        ax=ax, xticklabels=xt_j, yticklabels=yt_i,
+                        cbar_kws={'label': r'$l_{ij}^2$ (log color)'})
+        else:
+            sns.heatmap(left_sorted, cmap='magma', vmin=0.0, vmax=float(np.quantile(left_sorted, 0.999)),
+                        ax=ax, xticklabels=xt_j, yticklabels=yt_i,
+                        cbar_kws={'label': r'$l_{ij}^2$'})
+        ax.set_xlabel(r'singular mode $j$ (sorted by singular value $s_j$)')
+        ax.set_ylabel(r'class $i$ (sorted by exponent $c_i$)')
+        ax.set_title(f'$l_{{ij}}^2$ heatmap ({scale} color) — {run_label}')
+        _save(fig, f'fig_svd_l2_heatmap_{scale}')
+
+    # Example class left-vector profiles l_ij^2 vs j with fits (are classes the same?).
+    finite_c = np.where(np.isfinite(c_i))[0]
+    fig, ax = plt.subplots(figsize=(6.6, 4.9))
+    if sj_lo > 1:
+        ax.axvspan(0.9, sj_lo, color='0.85', alpha=0.5, zorder=0)
+    if sj_hi < num_modes:
+        ax.axvspan(sj_hi, num_modes * 1.05, color='0.85', alpha=0.5, zorder=0)
+    if finite_c.size:
+        ranked = finite_c[np.argsort(c_i[finite_c])]
+        examples = {'smallest $c_i$': int(ranked[0]),
+                    'median $c_i$': int(ranked[ranked.size // 2]),
+                    'largest $c_i$': int(ranked[-1])}
+        colors = plt.cm.viridis(np.linspace(0.1, 0.85, len(examples)))
+        for (label, ci), color in zip(examples.items(), colors):
+            ax.loglog(positions_j, np.clip(left_sq[ci], 1e-30, None), marker='.', linestyle='none',
+                      markersize=3, alpha=0.4, color=color,
+                      label=f'class {ci} ({label}={c_i[ci]:.2f})')
+            if np.isfinite(c_i[ci]) and np.isfinite(log_b2[ci]):
+                ax.loglog(bulk_j, np.exp(log_b2[ci]) * bulk_j ** (-2.0 * c_i[ci]),
+                          color=color, linewidth=2.2)
+    ax.set_xlabel('singular mode index $j$')
+    ax.set_ylabel(r'$l_{ij}^2$ (left singular vector)')
+    ax.set_title(f'Example class left-vector profiles — {run_label}')
+    ax.grid(True, which='both', alpha=0.25)
+    ax.legend(fontsize=8)
+    _save(fig, 'fig_svd_left_vector_profiles')
+
+    # Distribution of per-class exponents c_i and the fit quality (RMSE).
+    fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.4))
+    finite_ci = c_i[np.isfinite(c_i)]
+    axes[0].hist(finite_ci, bins=40, color='steelblue', alpha=0.85)
+    if finite_ci.size:
+        axes[0].axvline(float(np.median(finite_ci)), color='crimson', linestyle='--',
+                        label=f'median={np.median(finite_ci):.2f}')
+        axes[0].legend()
+    axes[0].set_xlabel(r'per-class left exponent $c_i$')
+    axes[0].set_ylabel('number of classes')
+    axes[0].set_title(fr'Distribution of $c_i$ (std={np.std(finite_ci):.2f})')
+    axes[0].grid(True, alpha=0.25)
+    finite_rmse = c_rmse[np.isfinite(c_rmse)]
+    axes[1].hist(finite_rmse, bins=40, color='seagreen', alpha=0.85)
+    if finite_rmse.size:
+        axes[1].axvline(float(np.median(finite_rmse)), color='crimson', linestyle='--',
+                        label=f'median={np.median(finite_rmse):.3f}')
+        axes[1].legend()
+    axes[1].set_xlabel('per-class fit log-RMSE')
+    axes[1].set_ylabel('number of classes')
+    axes[1].set_title('Left-vector fit quality')
+    axes[1].grid(True, alpha=0.25)
+    fig.suptitle(f'Per-class left-vector power-law fits — {run_label}')
+    fig.tight_layout(rect=(0, 0, 1, 0.96))
+    _save(fig, 'fig_svd_c_distribution')
+
+    # c_i vs class accuracy (easy vs hard), if accuracy is available.
+    if class_accuracy is not None:
+        acc = np.asarray(class_accuracy, dtype=np.float64)
+        valid = np.isfinite(c_i) & np.isfinite(acc)
+        if valid.sum() >= 3:
+            r, rho = _pearson_spearman(c_i[valid], acc[valid])
+            fig, ax = plt.subplots(figsize=(6.4, 4.8))
+            ax.scatter(c_i[valid], acc[valid], s=8, alpha=0.5, color='indigo')
+            ax.set_xlabel(r'per-class left exponent $c_i$')
+            ax.set_ylabel('class accuracy')
+            ax.set_title(fr'$c_i$ vs accuracy — Pearson $r={r:.2f}$, Spearman $\rho={rho:.2f}$')
+            ax.grid(True, alpha=0.25)
+            _save(fig, 'fig_svd_c_vs_accuracy')
+
     return written
 
 
@@ -219,20 +332,35 @@ def main() -> None:
         else os.path.join(os.path.abspath(args.results_dir), 'svd')
     os.makedirs(output_dir, exist_ok=True)
 
+    class_accuracy = np.asarray(data['acc_full'], dtype=np.float64) if 'acc_full' in data.files else None
     finite_a = result['a_j'][np.isfinite(result['a_j'])]
-    print(f'run={run_label} modes={num_modes} bulk_k=[{k_lo},{k_hi}] num_bins={num_bins}')
+    c_i = np.asarray(result['c_i'], dtype=np.float64)
+    finite_c = c_i[np.isfinite(c_i)]
+    c_rmse = np.asarray(result['c_rmse_i'], dtype=np.float64)
+    finite_c_rmse = c_rmse[np.isfinite(c_rmse)]
+    num_classes = result['num_classes']
+    print(f'run={run_label} modes={num_modes} classes={num_classes} num_bins={num_bins}')
     print(f'singular-value exponent c={result["sj_exponent_c"]:.4f} '
           f'(bulk j=[{result["sj_k_lo"]},{result["sj_k_hi"]}])')
-    print(f'a_j: mean={finite_a.mean():.4f} std={finite_a.std():.4f} '
-          f'min={finite_a.min():.4f} max={finite_a.max():.4f}')
+    print(f'a_j (right/per-mode): mean={finite_a.mean():.4f} std={finite_a.std():.4f}')
+    print(f'c_i (left/per-class): mean={finite_c.mean():.4f} std={finite_c.std():.4f} '
+          f'min={finite_c.min():.4f} max={finite_c.max():.4f} ({finite_c.size}/{num_classes} fit)')
+    print(f'left fit quality: median log-RMSE={np.median(finite_c_rmse):.4f} '
+          f'(p90={np.quantile(finite_c_rmse, 0.9):.4f})')
+    if class_accuracy is not None:
+        r, rho = _pearson_spearman(c_i, class_accuracy)
+        print(f'corr(c_i, accuracy): pearson={r:.3f} spearman={rho:.3f}')
 
-    # Save arrays + per-mode CSV.
+    # Save arrays + per-mode / per-class CSVs.
     np.savez_compressed(
         os.path.join(output_dir, 'svd_arrays.npz'),
         singular_values=result['singular_values'],
         a_j=result['a_j'],
         log_amp_j=result['log_amp_j'],
         rmse_j=result['rmse_j'],
+        c_i=result['c_i'],
+        log_B2_i=result['log_B2_i'],
+        c_rmse_i=result['c_rmse_i'],
         sj_exponent_c=np.float64(result['sj_exponent_c']),
         bulk_k_lo=np.int64(k_lo), bulk_k_hi=np.int64(k_hi),
         sj_k_lo=np.int64(result['sj_k_lo']), sj_k_hi=np.int64(result['sj_k_hi']),
@@ -251,9 +379,23 @@ def main() -> None:
                 'log_amp': float(result['log_amp_j'][j]),
                 'fit_rmse': float(result['rmse_j'][j]),
             })
+    class_csv = os.path.join(output_dir, 'svd_per_class.csv')
+    with open(class_csv, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=['class_index', 'c_i', 'log_B2',
+                                                    'fit_rmse', 'acc_full'])
+        writer.writeheader()
+        for i in range(num_classes):
+            writer.writerow({
+                'class_index': i,
+                'c_i': float(result['c_i'][i]),
+                'log_B2': float(result['log_B2_i'][i]),
+                'fit_rmse': float(result['c_rmse_i'][i]),
+                'acc_full': float(class_accuracy[i]) if class_accuracy is not None else float('nan'),
+            })
 
-    written = _render(result, run_label, example_modes, output_dir, args.format)
-    for path in [os.path.join(output_dir, 'svd_arrays.npz'), csv_path, *written]:
+    written = _render(result, run_label, example_modes, output_dir, args.format,
+                      class_accuracy=class_accuracy)
+    for path in [os.path.join(output_dir, 'svd_arrays.npz'), csv_path, class_csv, *written]:
         print(f'wrote {path}')
 
 
