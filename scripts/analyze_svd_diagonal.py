@@ -590,61 +590,63 @@ def _render_r2_heatmap(right_sq: np.ndarray, run_label: str, output_dir: str, fm
     return written
 
 
-def robust_singular_powerlaw(s: np.ndarray, num_bins: int = 24) -> dict:
-    """Robust power-law fit s_j ~ j^{-c} over the BULK (head and finite-dimension cliff
-    excluded), so the fitted line actually hugs the data.
+def _cliff_onset(ly: np.ndarray) -> int:
+    """Index j_hi (1-based) of the last mode BEFORE the finite-dimension cliff.
 
-    Many modes (ImageNet): use the seed-and-grow capacity fitter, which auto-selects a
-    clean bulk window [j_lo, j_hi] and returns its exponent. Few modes (CIFAR, ~10): the
-    seed-grow is unreliable, so trim only the collapsed trailing cliff (e.g. the rank-
-    deficient last mode ~1e-7) and OLS-fit the rest.
+    The cliff is a contiguous run of trailing modes whose per-step log-drop is far larger
+    than the bulk (a sharp collapse, e.g. CIFAR's rank-deficient last mode). Only the tail
+    is cut -- the head is always kept.
+    """
+    p = ly.size
+    if p < 6:
+        return p
+    drop = -np.diff(ly)  # drop[i] = ly[i]-ly[i+1] >= ~0 in the bulk
+    mid = drop[p // 4: max(p // 4 + 1, 3 * p // 4)]
+    med = float(np.median(mid))
+    mad = float(np.median(np.abs(mid - med))) or 1e-9
+    hi = p  # keep [1..hi]
+    for i in range(p - 2, -1, -1):  # step i links mode i+1 and i+2 (1-based)
+        if drop[i] > med + 6.0 * 1.4826 * mad and drop[i] > 2.5 * max(med, 1e-9):
+            hi = i + 1  # exclude modes after i+1
+        else:
+            break
+    return max(hi, max(6, p // 2))  # never trim more than the tail half
+
+
+def robust_singular_powerlaw(s: np.ndarray, num_bins: int = 24) -> dict:
+    """Power-law fit s_j ~ j^{-c} keeping the head, excluding ONLY the sharp finite-
+    dimension cliff at the tail.
+
+    The fit is over LOG-SPACED-BINNED (j, s) on [1, j_hi]: binning gives every decade
+    equal weight, so the numerous mid/tail modes don't dominate and steepen the slope past
+    the (kept) head. The line then hugs the whole curve from head to cliff; residual
+    curvature shows up as a lower R^2.
     """
     s = np.asarray(s, dtype=np.float64)
     s = s[np.isfinite(s) & (s > 0)]
     p = s.size
     j = np.arange(1, p + 1, dtype=np.float64)
-
-    def _r2(jlo, jhi, slope, intercept):
-        sel = (j >= jlo) & (j <= jhi)
-        lx, ly = np.log(j[sel]), np.log(s[sel])
-        pred = slope * lx + intercept
-        ss_res = float(np.sum((ly - pred) ** 2))
-        ss_tot = float(np.sum((ly - ly.mean()) ** 2))
-        return 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
-
-    if p >= 40:
-        cap = robust_capacity_fit(s, num_bins)
-        j_lo, j_hi = int(cap['k_lo']), int(cap['k_hi'])
-        c, intercept = float(cap['b']), float(cap['intercept'])
-        n_excl = int(p - int(((j >= j_lo) & (j <= j_hi)).sum()))
-        return {'c': c, 'intercept': intercept, 'r2': _r2(j_lo, j_hi, -c, intercept),
-                'j_lo': j_lo, 'j_hi': j_hi, 'n_excluded': n_excl,
-                'method': 'seed-grow bulk', 'j': j, 's': s}
-
-    # Few modes: trim the trailing collapsed cliff, OLS-fit the rest.
     lx, ly = np.log(j), np.log(s)
-    keep = np.ones(p, dtype=bool)
-    for _ in range(3):
-        idx = np.where(keep)[0]
-        if idx.size < 4:
-            break
-        sl, ic = np.polyfit(lx[idx], ly[idx], 1)
-        resid = ly - (sl * lx + ic)
-        new_keep = keep.copy()
-        for jj in idx[::-1]:
-            if resid[jj] < np.log(0.3):
-                new_keep[jj] = False
-            else:
-                break
-        if int(new_keep.sum()) < 4 or bool(np.all(new_keep == keep)):
-            keep = new_keep
-            break
-        keep = new_keep
-    idx = np.where(keep)[0]
-    sl, ic = np.polyfit(lx[idx], ly[idx], 1)
-    return {'c': -float(sl), 'intercept': float(ic), 'r2': _r2(j[idx][0], j[idx][-1], sl, ic),
-            'j_lo': int(j[idx][0]), 'j_hi': int(j[idx][-1]), 'n_excluded': int((~keep).sum()),
-            'method': 'cliff-trim OLS', 'j': j, 's': s}
+    if p < 4:
+        sl, ic = (np.polyfit(lx, ly, 1) if p >= 2 else (float('nan'), float('nan')))
+        return {'c': -float(sl), 'intercept': float(ic), 'r2': float('nan'),
+                'j_lo': 1, 'j_hi': p, 'n_excluded': 0, 'method': 'OLS', 'j': j, 's': s}
+
+    j_hi = _cliff_onset(ly)
+    bx, by = _log_binned_median(j[:j_hi], s[:j_hi], num_bins=min(num_bins, max(4, j_hi)))
+    if bx.size >= 2:
+        lbx, lby = np.log(bx), np.log(by)
+        sl, ic = np.polyfit(lbx, lby, 1)
+        pred = sl * lbx + ic
+        ss_res = float(np.sum((lby - pred) ** 2))
+        ss_tot = float(np.sum((lby - lby.mean()) ** 2))
+        r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+    else:  # too few bins (e.g. CIFAR): plain OLS on the kept modes
+        sl, ic = np.polyfit(lx[:j_hi], ly[:j_hi], 1)
+        r2 = float('nan')
+    return {'c': -float(sl), 'intercept': float(ic), 'r2': r2,
+            'j_lo': 1, 'j_hi': int(j_hi), 'n_excluded': int(p - j_hi),
+            'method': 'log-binned OLS, sharp-tail trimmed (head kept)', 'j': j, 's': s}
 
 
 def _render_singular(sfit: dict, run_label: str, output_dir: str, fmt: str) -> str:
