@@ -37,6 +37,8 @@ def parse_args() -> argparse.Namespace:
                         help='Transverse half-window M (|d|<=M). 0 => min(n//2, 120).')
     parser.add_argument('--transverse-smooth', type=int, default=2,
                         help='Half-width (in d) for smoothing the on-diagonal amplitude.')
+    parser.add_argument('--n-null', type=int, default=400, help='Haar Monte-Carlo draws.')
+    parser.add_argument('--seed', type=int, default=0, help='RNG seed for the Haar null.')
     parser.add_argument('--format', choices=['pdf', 'png'], default='png')
     return parser.parse_args()
 
@@ -207,41 +209,46 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
     amp_bx, amp_by = _log_binned_median(positions[long_mask], excess_amp[long_mask])
     long_fit = _loglog_fit(amp_bx, amp_by)
 
-    # Densely probe the transverse cross-section at log-spaced diagonal positions, from a
-    # small i up to where the on-diagonal amplitude fades into the floor (only there is a
-    # band resolvable). Each probe averages a longitudinal window of rows to denoise, then
-    # fits the shape and its exponential length ell(i).
+    # Densely probe the transverse cross-section at EVERY diagonal position i (sliding
+    # longitudinal window; no log-spaced sampling), from a small i up to where the
+    # on-diagonal amplitude fades into the floor (only there is a band resolvable). Fit the
+    # exponential length ell(i) ~ i^q from the dense set.
     cross = np.where(amp_by > 2.0 * floor)[0]
     i_cross = int(amp_bx[cross[-1]]) if cross.size else i_hi
     i_cross = int(min(i_cross, n // 3))
-    probe_centers = sorted(set(
-        int(round(x)) for x in np.logspace(np.log10(8), np.log10(max(9, i_cross)), 14)
-    ))
+    i_probe_lo = 6
+    probe_positions = list(range(i_probe_lo, max(i_probe_lo + 1, i_cross + 1)))
+    ell_by_i = np.full(n + 1, np.nan)
+    width_bx_list, ell_i = [], []
     shape_profiles, shapes = {}, {}
-    ell_i, width_bx_list = [], []
-    for c in probe_centers:
+    highlight = {int(round(x)) for x in np.linspace(i_probe_lo, max(i_probe_lo, i_cross), 5)}
+    all_verdicts = []
+    for c in probe_positions:
         w_bin = max(6, int(0.25 * c))
         prof = _profile_over(band, max(0, c - w_bin), min(n, c + w_bin + 1))
         sh = _transverse_shape(offsets, prof)
-        shape_profiles[c] = prof
-        shapes[c] = sh
+        if c in highlight:
+            shape_profiles[c] = prof
+            shapes[c] = sh
         if np.isfinite(sh.get('exponential_ell', np.nan)) and sh['best'] != 'undetermined':
             width_bx_list.append(float(c))
             ell_i.append(float(sh['exponential_ell']))
+            ell_by_i[c] = float(sh['exponential_ell'])
+            all_verdicts.append(sh['best'])
     width_bx = np.asarray(width_bx_list)
-    width_by = np.asarray(ell_i)  # transverse "width" = exponential length ell(i)
+    width_by = np.asarray(ell_i)  # transverse "width" = exponential length ell(i), dense in i
     width_fit = _loglog_fit(width_bx, width_by)
 
-    # Majority transverse-shape verdict across resolvable probes.
-    verdicts = [sh['best'] for sh in shapes.values() if sh['best'] != 'undetermined']
-    shape_verdict = max(set(verdicts), key=verdicts.count) if verdicts else 'undetermined'
+    # Majority transverse-shape verdict across ALL resolvable dense probes.
+    shape_verdict = max(set(all_verdicts), key=all_verdicts.count) if all_verdicts else 'undetermined'
 
     return {
         'offsets': offsets, 'floor': floor, 'positions': positions,
         'amp': amp, 'excess_amp': excess_amp,
         'amp_bx': amp_bx, 'amp_by': amp_by, 'width_bx': width_bx, 'width_by': width_by,
         'long_fit': long_fit, 'width_fit': width_fit, 'shape_verdict': shape_verdict,
-        'long_range': (i_lo, i_hi), 'shape_profiles': shape_profiles, 'shapes': shapes,
+        'long_range': (i_lo, i_hi), 'i_cross': int(i_cross),
+        'shape_profiles': shape_profiles, 'shapes': shapes,
         'n': n, 'num_features': num_features,
     }
 
@@ -283,8 +290,8 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
 
     # 2. Transverse width w(i) (HWHM, log-binned) vs i, log-log, with power-law fit.
     fig, ax = plt.subplots(figsize=(6.6, 4.9))
-    ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), 'o', ms=5,
-              color='seagreen', label=r'exponential length $\ell(i)$')
+    ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), '.', ms=4,
+              color='seagreen', label=r'exponential length $\ell(i)$ (every $i$)')
     wf = res['width_fit']
     if np.isfinite(wf['slope']) and res['width_bx'].size:
         xs = np.linspace(res['width_bx'].min(), res['width_bx'].max(), 50)
@@ -332,6 +339,108 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     return written
 
 
+def haar_below_floor(vt: np.ndarray, i_cross: int, *, n_null: int = 400, rng_seed: int = 0) -> dict:
+    """Test whether the right singular vectors below the noise floor are Haar-random.
+
+    Above the floor (modes j <= i_cross) each r_j is aligned with PC j (its on-diagonal
+    component dominates). Below the floor (j > i_cross) we test whether r_j is
+    indistinguishable from a uniform random unit vector in R^D via:
+
+      * participation ratio  PR_j = 1 / sum_k r_jk^4  (Haar ~ D/3; localized << that);
+      * diagonal percentile  frac of components with r_jk^2 < r_jj^2 (Haar ~ Uniform,
+        mean 0.5; aligned ~ 1);
+      * pooled component marginal sqrt(D) r_jk vs N(0,1) (KS).
+
+    Empirical below-floor statistics are compared to a Monte-Carlo Haar null (random unit
+    vectors in R^D) via z-scores.
+    """
+    p, dim = vt.shape
+    m = min(p, dim)
+    r2 = vt[:m] ** 2
+    modes = np.arange(1, m + 1)
+    pr = 1.0 / np.sum(r2 ** 2, axis=1)
+    diag_pct = np.array([float(np.mean(r2[j] < r2[j, j])) for j in range(m)])
+
+    below = modes > i_cross
+    above = modes <= i_cross
+
+    rng = np.random.default_rng(rng_seed)
+    g = rng.standard_normal((n_null, dim))
+    u2 = (g / np.linalg.norm(g, axis=1, keepdims=True)) ** 2
+    pr_null = 1.0 / np.sum(u2 ** 2, axis=1)
+    pr_mu, pr_sd = float(pr_null.mean()), float(pr_null.std())
+    diag_mu, diag_sd = 0.5, float(1.0 / np.sqrt(12.0))  # Uniform order-statistic
+
+    def _z(vals, mu, sd):
+        vals = vals[np.isfinite(vals)]
+        if vals.size == 0 or sd == 0:
+            return float('nan')
+        return float((vals.mean() - mu) / (sd / np.sqrt(vals.size)))
+
+    ks_stat = ks_p = float('nan')
+    if below.sum() > 1:
+        try:
+            from scipy.stats import kstest
+            z = (np.sqrt(dim) * vt[:m][below]).ravel()
+            ks_stat, ks_p = (float(v) for v in kstest(z, 'norm'))
+        except Exception:
+            pass
+
+    return {
+        'modes': modes, 'pr': pr, 'diag_pct': diag_pct, 'below': below, 'above': above,
+        'i_cross': int(i_cross), 'dim': int(dim),
+        'pr_null_mu': pr_mu, 'pr_null_sd': pr_sd, 'diag_null_mu': diag_mu, 'diag_null_sd': diag_sd,
+        'pr_below_mean': float(np.nanmean(pr[below])) if below.any() else float('nan'),
+        'pr_above_mean': float(np.nanmean(pr[above])) if above.any() else float('nan'),
+        'diag_below_mean': float(np.nanmean(diag_pct[below])) if below.any() else float('nan'),
+        'diag_above_mean': float(np.nanmean(diag_pct[above])) if above.any() else float('nan'),
+        'pr_below_z': _z(pr[below], pr_mu, pr_sd),
+        'diag_below_z': _z(diag_pct[below], diag_mu, diag_sd),
+        'ks_stat': ks_stat, 'ks_p': ks_p,
+    }
+
+
+def _render_haar(h: dict, run_label: str, output_dir: str, fmt: str) -> str:
+    modes = h['modes']
+    below, above = h['below'], h['above']
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.7))
+    # Participation ratio vs mode.
+    ax = axes[0]
+    ax.plot(modes[above], h['pr'][above], '.', ms=3, color='indianred', label='above floor')
+    ax.plot(modes[below], h['pr'][below], '.', ms=3, color='steelblue', label='below floor')
+    lo = h['pr_null_mu'] - 2 * h['pr_null_sd']
+    hi = h['pr_null_mu'] + 2 * h['pr_null_sd']
+    ax.axhspan(lo, hi, color='0.7', alpha=0.4, label='Haar null (±2σ)')
+    ax.axhline(h['dim'] / 3.0, color='0.4', ls=':', lw=1, label='D/3')
+    ax.axvline(h['i_cross'], color='k', ls='--', lw=1)
+    ax.set_xscale('log')
+    ax.set_xlabel('singular mode $j$')
+    ax.set_ylabel(r'participation ratio $1/\sum_k r_{jk}^4$')
+    ax.set_title('participation ratio vs Haar')
+    ax.legend(fontsize=8)
+    ax.grid(True, which='both', alpha=0.25)
+    # Diagonal percentile vs mode.
+    ax = axes[1]
+    ax.plot(modes[above], h['diag_pct'][above], '.', ms=3, color='indianred', label='above floor')
+    ax.plot(modes[below], h['diag_pct'][below], '.', ms=3, color='steelblue', label='below floor')
+    ax.axhspan(0.5 - 2 * h['diag_null_sd'], 0.5 + 2 * h['diag_null_sd'], color='0.7', alpha=0.4,
+               label='Haar null (±2σ)')
+    ax.axhline(0.5, color='0.4', ls=':', lw=1)
+    ax.axvline(h['i_cross'], color='k', ls='--', lw=1)
+    ax.set_xscale('log')
+    ax.set_xlabel('singular mode $j$')
+    ax.set_ylabel(r'diagonal percentile of $r_{jj}^2$')
+    ax.set_title('diagonal dominance vs Haar')
+    ax.legend(fontsize=8)
+    ax.grid(True, which='both', alpha=0.25)
+    fig.suptitle(f'Below-floor Haar test (right singular vectors) — {run_label}')
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
+    path = os.path.join(output_dir, f'fig_svd_haar_below_floor.{fmt}')
+    fig.savefig(path, bbox_inches='tight', dpi=200)
+    plt.close(fig)
+    return path
+
+
 def main() -> None:
     args = parse_args()
     npz_path = os.path.join(args.results_dir, 'powerlaw_arrays.npz')
@@ -368,10 +477,23 @@ def main() -> None:
         'transverse_length_exponent_q': wf['slope'], 'transverse_length_r2': wf['r2'],
         'transverse_shapes': {int(c): sh for c, sh in res['shapes'].items()},
     }
+    # Haar test: below the floor, are the right singular vectors random unit vectors?
+    haar = haar_below_floor(vt, res['i_cross'], n_null=args.n_null, rng_seed=args.seed)
+    print(f'--- Haar test (floor crossing at mode i~{res["i_cross"]}) ---')
+    print(f'participation ratio: below={haar["pr_below_mean"]:.1f} above={haar["pr_above_mean"]:.1f} '
+          f'Haar D/3={res["num_features"]/3:.1f} (null {haar["pr_null_mu"]:.1f}+/-{haar["pr_null_sd"]:.1f}); '
+          f'below z={haar["pr_below_z"]:.2f}')
+    print(f'diagonal percentile: below={haar["diag_below_mean"]:.3f} above={haar["diag_above_mean"]:.3f} '
+          f'(Haar 0.5); below z={haar["diag_below_z"]:.2f}')
+    print(f'pooled below-floor sqrt(D) r_jk vs N(0,1): KS={haar["ks_stat"]:.4f} p={haar["ks_p"]:.3g}')
+
+    summary['haar_below_floor'] = {k: (v if not isinstance(v, np.ndarray) else None)
+                                   for k, v in haar.items()}
     os.makedirs(output_dir, exist_ok=True)
     with open(os.path.join(output_dir, 'diagonal_band_summary.json'), 'w', encoding='utf-8') as h:
         json.dump(summary, h, indent=2)
     written = _render(res, run_label, output_dir, args.format)
+    written.append(_render_haar(haar, run_label, output_dir, args.format))
     for p in [os.path.join(output_dir, 'diagonal_band_summary.json'), *written]:
         print(f'wrote {p}')
 
