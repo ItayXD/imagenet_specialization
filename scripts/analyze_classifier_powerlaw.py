@@ -399,19 +399,21 @@ def robust_powerlaw_fit(
     rng_seed: int = 0,
     init_frac: float = 0.06,
     step_frac: float = 0.02,
-    rmse_tol: float = 0.14,
+    rmse_tol: float = 0.12,
     min_points: int = 10,
-    anchor_lo: float = 0.05,
-    anchor_hi: float = 0.95,
+    head_floor: float = 30.0,
 ) -> dict[str, Any]:
-    """Seed-and-grow power-law fit for the asymptotic clean regime.
+    """Seed-and-grow power-law fit of the clean regime, climbing toward large eigenvalues.
 
-    Cuts a small index-fraction head (``anchor_lo`` of D) and the finite-dimension
-    collapse, plants ``n_seeds`` index-uniform anchors between them, and grows each window
-    tolerantly (binned-robust log-log RMSE <= rmse_tol) toward larger k -- capturing the
-    clean high-k power law and extending it up. Reports the MEDIAN seed slope (robust to a
-    seed straying into the pre-cliff steepening) with the across-seed std as the error,
-    plus a per-k exclusion frequency for the graded fig1 shading.
+    The head (the top ~``head_floor`` eigenvalues) is a hard lower bound; the finite-
+    dimension collapse (detect_head_cliff) is the upper bound. Anchors are planted in the
+    lower-mid band and each window grows BOTH ways while the binned-robust log-log RMSE
+    stays <= rmse_tol: downward it climbs toward the large eigenvalues and stops at either
+    the head floor or where the head-transition curvature raises RMSE (whichever comes
+    first); upward it extends toward the collapse. Anchoring in the mid band (not the tail)
+    prevents seeds getting stuck in the small-eigenvalue tail. Reports the MEDIAN seed
+    slope with the across-seed std as the error, plus a per-k exclusion frequency for the
+    graded fig1 shading.
     """
     positions = np.asarray(positions, dtype=np.float64).reshape(-1)
     values = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -438,21 +440,19 @@ def robust_powerlaw_fit(
                 'exclusion_frac': np.zeros(values.size, dtype=np.float64),
                 'seed_slopes': np.asarray([s]), 'n_seeds_used': 1}
 
-    # Head cut: a small INDEX fraction (anchor_lo), since the large-eigenvalue head is a big
-    # log-space fraction but a tiny index fraction. Upper bound: the finite-dimension
-    # collapse (detect_head_cliff's cliff). Anchors are index-uniform in [floor, cliff] and
-    # grow tolerantly toward larger k; the asymptotic clean power law is captured, the
-    # collapse excluded. The median seed slope is the estimate (robust to a seed straying
-    # into the pre-cliff steepening); the across-seed std is the error.
+    # Head floor (hard lower bound: top ~head_floor eigenvalues), capped for tiny D; the
+    # finite-dimension collapse is the upper bound. Anchor in the lower-mid band [floor,
+    # sqrt(floor*cliff)] and grow both ways (downward toward the large eigenvalues, upward
+    # toward the collapse) so no seed gets stuck in the small-eigenvalue tail.
     n_positions = int(positions.max())
-    floor = max(1.0, anchor_lo * n_positions)
+    floor = float(min(head_floor, max(1, n_positions // 10)))
     _, cliff = detect_head_cliff(values)
     cliff = float(max(floor + 1.0, cliff))
     x_min = float(np.log(floor))
     x_max = float(np.log(cliff))
     span = x_max - x_min
     rng = np.random.default_rng(int(rng_seed))
-    anchors = np.log(rng.uniform(floor, cliff, size=int(n_seeds)))
+    anchors = np.log(rng.uniform(floor, float(np.sqrt(floor * cliff)), size=int(n_seeds)))
 
     slopes: list[float] = []
     los: list[float] = []
