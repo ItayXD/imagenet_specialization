@@ -109,7 +109,7 @@ def _plot_scalars_vs_width(groups, output_dir, fmt) -> str:
         for field, _title, ax in panels:
             ys = np.array([float(r['summary'].get(field, np.nan)) for r in runs])
             if field == 'capacity_exponent_b':
-                yerr = np.array([float(r['summary'].get('capacity_b_std', np.nan)) for r in runs])
+                yerr = np.array([float(r['summary'].get('capacity_b_sem', np.nan)) for r in runs])
                 ax.errorbar(widths, ys, yerr=yerr, marker='o', color=color, label=label,
                             capsize=3, elinewidth=1.2)
             else:
@@ -193,7 +193,7 @@ def _write_summary_csv(runs, output_dir) -> str:
     fields = [
         'dataset', 'optimizer_key', 'width', 'source_run_id', 'images_seen',
         'num_samples', 'num_features', 'num_classes', 'bulk_k_lo', 'bulk_k_hi',
-        'capacity_exponent_b', 'capacity_b_std', 'capacity_log_rmse', 'source_exponent_mean',
+        'capacity_exponent_b', 'capacity_b_sem', 'capacity_b_std', 'capacity_log_rmse', 'source_exponent_mean',
         'source_exponent_std', 'source_exponent_sem', 'source_negative_count', 'overall_val_accuracy',
         'overall_val_cross_entropy', 'corr_a_vs_accuracy_pearson',
         'corr_a_vs_accuracy_spearman', 'corr_a_vs_ce_pearson',

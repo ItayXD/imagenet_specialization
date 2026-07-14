@@ -29,8 +29,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-root', required=True,
                         help='Directory scanned recursively for powerlaw_arrays.npz.')
-    parser.add_argument('--fit-seeds', type=int, default=12)
-    parser.add_argument('--fit-rmse-tol', type=float, default=0.06)
+    parser.add_argument('--fit-seeds', type=int, default=64)
+    parser.add_argument('--fit-rmse-tol', type=float, default=0.10)
     parser.add_argument('--rng-seed', type=int, default=2423)
     parser.add_argument('--format', choices=['pdf', 'png'], default='png')
     return parser.parse_args()
@@ -77,10 +77,12 @@ def refit_run(run_dir: str, *, fit_seeds: int, fit_rmse_tol: float, rng_seed: in
     data['log_A2'] = source['log_A2'].astype(np.float64)
     data['class_fit_rmse'] = source['log_rmse'].astype(np.float64)
     data['capacity_exponent_b'] = np.float64(cap['b'])
+    data['capacity_b_sem'] = np.float64(cap['b_sem'])
     data['capacity_b_std'] = np.float64(cap['b_std'])
     data['capacity_intercept'] = np.float64(cap['intercept'])
     data['capacity_log_rmse'] = np.float64(cap['log_rmse'])
     data['capacity_seed_slopes'] = np.asarray(cap['seed_slopes'], dtype=np.float64)
+    data['capacity_exclusion_frac'] = np.asarray(cap['exclusion_frac'], dtype=np.float64)
     data['bulk_k_lo'] = np.int64(k_lo)
     data['bulk_k_hi'] = np.int64(k_hi)
     np.savez_compressed(npz_path, **data)
@@ -118,7 +120,8 @@ def refit_run(run_dir: str, *, fit_seeds: int, fit_rmse_tol: float, rng_seed: in
             summary = json.load(h)
     summary.update({
         'bulk_k_lo': int(k_lo), 'bulk_k_hi': int(k_hi),
-        'capacity_exponent_b': float(cap['b']), 'capacity_b_std': float(cap['b_std']),
+        'capacity_exponent_b': float(cap['b']), 'capacity_b_sem': float(cap['b_sem']),
+        'capacity_b_std': float(cap['b_std']),
         'capacity_log_rmse': float(cap['log_rmse']), 'capacity_fit_seeds': int(cap['n_seeds_used']),
         'source_exponent_mean': float(np.mean(finite_a)) if finite_a.size else float('nan'),
         'source_exponent_std': float(np.std(finite_a)) if finite_a.size else float('nan'),
@@ -132,7 +135,7 @@ def refit_run(run_dir: str, *, fit_seeds: int, fit_rmse_tol: float, rng_seed: in
         json.dump(summary, h, indent=2)
 
     _render_all_figures(data, run_dir, fmt=fmt)
-    return {'run': run_dir, 'b': cap['b'], 'b_std': cap['b_std'], 'k_lo': k_lo, 'k_hi': k_hi,
+    return {'run': run_dir, 'b': cap['b'], 'b_sem': cap['b_sem'], 'k_lo': k_lo, 'k_hi': k_hi,
             'rmse': cap['log_rmse'], 'a_mean': float(np.mean(finite_a)) if finite_a.size else float('nan')}
 
 
@@ -147,7 +150,7 @@ def main() -> None:
         res = refit_run(run_dir, fit_seeds=args.fit_seeds, fit_rmse_tol=args.fit_rmse_tol,
                         rng_seed=args.rng_seed, fmt=args.format)
         print(f'{os.path.relpath(run_dir, args.results_root):24s} '
-              f'b={res["b"]:.3f}+/-{res["b_std"]:.3f} win=[{res["k_lo"]},{res["k_hi"]}] '
+              f'b={res["b"]:.3f}+/-{res["b_sem"]:.3f} (SEM) consensus=[{res["k_lo"]},{res["k_hi"]}] '
               f'rmse={res["rmse"]:.3f} a_mean={res["a_mean"]:.3f}')
 
 

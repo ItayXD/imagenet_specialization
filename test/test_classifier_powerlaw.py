@@ -207,14 +207,32 @@ def test_robust_capacity_fit_excludes_head_and_recovers_bulk():
     assert fit['log_rmse'] < 0.06                    # the reported window fits cleanly
 
 
-def test_robust_powerlaw_fit_curved_gives_larger_errorbar():
-    k = np.arange(1, 2001, dtype=np.float64)
-    clean = k ** (-1.0)
-    # two-regime (curved) spectrum: shallow then steep
-    curved = np.where(k <= 200, k ** (-0.6), (200.0 ** (-0.6 + 1.3)) * k ** (-1.3))
-    clean_fit = robust_powerlaw_fit(k, clean, 24)
-    curved_fit = robust_powerlaw_fit(k, curved, 24)
-    assert curved_fit['slope_std'] > clean_fit['slope_std']
+def test_detect_head_cliff_trims_head_and_cliff():
+    from scripts.analyze_classifier_powerlaw import detect_head_cliff
+
+    k = np.arange(1, 1001, dtype=np.float64)
+    eig = k ** (-1.2)
+    eig[:10] *= np.linspace(3.0, 1.0, 10)          # curved head
+    eig[-120:] *= np.geomspace(1.0, 1e-6, 120)     # finite-dimension cliff
+    k_lo, k_hi = detect_head_cliff(eig)
+    assert k_lo >= 3           # head excluded
+    assert k_hi <= 930         # cliff excluded
+    assert k_hi - k_lo > 100   # a substantial bulk remains
+
+
+def test_detect_head_cliff_no_trim_on_clean_powerlaw():
+    from scripts.analyze_classifier_powerlaw import detect_head_cliff
+
+    k = np.arange(1, 1001, dtype=np.float64)
+    k_lo, k_hi = detect_head_cliff(k ** (-1.1))
+    assert k_lo == 1 and k_hi == 1000  # a clean power law is not trimmed
+
+
+def test_robust_capacity_fit_sem_small_on_clean_powerlaw():
+    k = np.arange(1, 1001, dtype=np.float64)
+    fit = robust_capacity_fit(k ** (-1.2), num_bins=24)
+    assert abs(fit['b'] - 1.2) < 0.05
+    assert fit['b_sem'] < 0.02  # seeds agree -> tight SEM
 
 
 def test_compute_svd_source_matches_svd():

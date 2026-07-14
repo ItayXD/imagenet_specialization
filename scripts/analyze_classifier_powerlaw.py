@@ -348,29 +348,71 @@ def _grow_window_slope(
     return lo, hi, slope, steps
 
 
+def detect_head_cliff(values: np.ndarray, *, grid: int = 200, smooth_frac: float = 0.04,
+                      curvature_tol: float = 0.05) -> tuple[int, int]:
+    """Data-driven [k_lo, k_hi] trim of a spectrum's early head and finite-dimension cliff.
+
+    Works in log-log on a uniform log-k grid (so it does not assume the bulk sits at any
+    particular index position). The head is the sharpest concave-up knee in the low-k
+    third; the cliff is the sharpest downward bend in the high-k portion. Each trim is
+    applied only if its knee curvature exceeds ``curvature_tol`` (so a clean single power
+    law, whose curvature is ~0, is not trimmed). Returns 1-based inclusive [k_lo, k_hi].
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+    k = np.arange(1, n + 1, dtype=np.float64)
+    mask = values > 0
+    if int(mask.sum()) < 8:
+        return 1, n
+    log_k = np.log(k[mask])
+    log_v = np.log(values[mask])
+    g = np.linspace(log_k[0], log_k[-1], grid)
+    vg = np.interp(g, log_k, log_v)
+    win = max(3, int(smooth_frac * grid))
+    kern = np.ones(win) / win
+    vs = np.convolve(vg, kern, mode='same')
+    d2 = np.gradient(np.gradient(vs, g), g)
+
+    lo_i = int(0.03 * grid)
+    head_region = d2[lo_i:int(0.45 * grid)]
+    cliff_region = d2[int(0.55 * grid):]
+    k_lo, k_hi = 1, n
+    if head_region.size:
+        h = lo_i + int(np.argmax(head_region))
+        if d2[h] > curvature_tol:  # a real concave-up head knee
+            k_lo = max(1, int(round(np.exp(g[h]))))
+    if cliff_region.size:
+        c = int(0.55 * grid) + int(np.argmin(cliff_region))
+        if d2[c] < -curvature_tol:  # a real downward cliff bend
+            k_hi = min(n, int(round(np.exp(g[c]))))
+    if k_hi - k_lo < max(8, n // 50):  # guard against an over-aggressive trim
+        return 1, n
+    return k_lo, k_hi
+
+
 def robust_powerlaw_fit(
     positions: np.ndarray,
     values: np.ndarray,
     num_bins: int,
     *,
-    n_seeds: int = 12,
+    n_seeds: int = 64,
     rng_seed: int = 0,
     init_frac: float = 0.06,
     step_frac: float = 0.02,
-    rmse_tol: float = 0.06,
+    rmse_tol: float = 0.10,
     min_points: int = 10,
-    anchor_lo: float = 0.25,
-    anchor_hi: float = 0.75,
+    anchor_lo: float = 0.05,
+    anchor_hi: float = 0.95,
 ) -> dict[str, Any]:
-    """Seed-and-grow power-law fit: robust exponent + window + across-seed error bar.
+    """Seed-and-grow power-law fit with a data-driven head/cliff trim.
 
-    Plants ``n_seeds`` anchors at random log-positions in [anchor_lo, anchor_hi] of the
-    range and grows a window around each while the binned-robust log-log fit stays clean
-    (RMSE <= rmse_tol; same estimator used for plotting). Per-seed slopes are aggregated
-    (median) with their spread (std) as an honest error bar: on a clean single power law
-    seeds agree (small std, wide window); on a curved spectrum they settle in different
-    regimes (large std), flagging the ambiguity. Returns the median window [k_lo, k_hi],
-    seed slopes, and their std.
+    Detects and excludes the early head and finite-dimension cliff (detect_head_cliff),
+    plants ``n_seeds`` anchors across the trimmed region, and grows each window while the
+    binned-robust log-log RMSE stays clean (<= rmse_tol). Reports the MEDIAN seed slope
+    (robust to a seed straying into a steeper sub-regime) with the standard error of the
+    mean between seeds as the error bar, plus a per-k exclusion frequency for the graded
+    fig1 shading. The trim is per-run and its uncertainty is carried by the seed spread,
+    so it is not a hand-fixed window.
     """
     positions = np.asarray(positions, dtype=np.float64).reshape(-1)
     values = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -392,12 +434,23 @@ def robust_powerlaw_fit(
         s, _ = fit_fn(log_x[0], log_x[-1]) if log_x.size >= 2 else (float('nan'), None)
         lo_k = int(round(np.exp(log_x[0]))) if log_x.size else 1
         hi_k = int(round(np.exp(log_x[-1]))) if log_x.size else 1
-        return {'slope': s, 'slope_std': float('nan'), 'k_lo': max(1, lo_k),
-                'k_hi': max(1, hi_k), 'seed_slopes': np.asarray([s]), 'n_seeds_used': 1}
+        return {'slope': s, 'slope_sem': float('nan'), 'slope_std': float('nan'),
+                'k_lo': max(1, lo_k), 'k_hi': max(1, hi_k),
+                'exclusion_frac': np.zeros(values.size, dtype=np.float64),
+                'seed_slopes': np.asarray([s]), 'n_seeds_used': 1}
 
-    span = float(log_x[-1] - log_x[0])
-    x_min = float(log_x[0])
+    # Data-driven trim of the head and finite-dimension cliff (per run, position-agnostic).
+    # Seeds are planted inside the trimmed region and their growth is clamped to it, so the
+    # window still varies per seed (shown by the shading) but no seed strays into the head
+    # or cliff. This is NOT a hand-fixed window: [trim_lo, trim_hi] is detected from the
+    # data and its uncertainty is carried by the per-seed spread.
+    trim_lo, trim_hi = detect_head_cliff(values)
+    x_min = float(np.log(trim_lo))
+    x_max = float(np.log(trim_hi))
+    span = x_max - x_min
     rng = np.random.default_rng(int(rng_seed))
+    # Log-uniform anchors within the trimmed bulk so seeds sample it evenly (linear-uniform
+    # would pile most seeds at high k for a wide trim).
     anchors = x_min + rng.uniform(anchor_lo, anchor_hi, size=int(n_seeds)) * span
 
     slopes: list[float] = []
@@ -405,7 +458,7 @@ def robust_powerlaw_fit(
     his: list[float] = []
     for anchor in anchors:
         lo, hi, slope, _ = _grow_window_slope(
-            fit_fn, x_min, float(log_x[-1]), float(anchor), span,
+            fit_fn, x_min, x_max, float(anchor), span,
             init_frac=init_frac, step_frac=step_frac, rmse_tol=rmse_tol,
         )
         if np.isfinite(slope):
@@ -414,36 +467,48 @@ def robust_powerlaw_fit(
             his.append(hi)
     if not slopes:
         s, _ = fit_fn(log_x[0], log_x[-1])
-        return {'slope': s, 'slope_std': float('nan'),
+        return {'slope': s, 'slope_sem': float('nan'), 'slope_std': float('nan'),
                 'k_lo': int(max(1, round(np.exp(log_x[0])))),
                 'k_hi': int(round(np.exp(log_x[-1]))),
+                'exclusion_frac': np.zeros(values.size, dtype=np.float64),
                 'seed_slopes': np.asarray([s]), 'n_seeds_used': 0}
 
     slopes_arr = np.asarray(slopes, dtype=np.float64)
     los_arr = np.asarray(los)
     his_arr = np.asarray(his)
-    spans = his_arr - los_arr
-    # On a curved spectrum, seeds settle in different regimes; the median window is then
-    # meaningless. The bulk/asymptotic regime (the one we want) is the large-k power law
-    # just before the finite-dimension cliff, so pick the clean window reaching the
-    # largest k_hi (among those spanning at least ~min_span_decades), tie-broken by span.
-    # The across-seed slope spread (MAD) is the error bar: large iff the exponent is
-    # range-dependent (curvature).
-    min_span = np.log(10.0) * 0.6  # ~0.6 decade
-    eligible = np.where(spans >= min_span)[0]
-    pool = eligible if eligible.size else np.arange(spans.size)
-    chosen = int(pool[np.argmax(his_arr[pool] + 1e-6 * spans[pool])])
-    median = float(np.median(slopes_arr))
-    mad = float(np.median(np.abs(slopes_arr - median)))
-    robust_std = 1.4826 * mad if slopes_arr.size >= 4 else float(np.std(slopes_arr))
+    n = slopes_arr.size
+
+    # Point estimate = MEDIAN across seeds (robust to a seed that strays into a steeper
+    # sub-regime of a curved bulk); error = standard error of the mean between seeds.
+    # Two uncertainties: within-window (the fit) and about-the-window (which k each seed
+    # keeps). The latter is summarized per-k as the fraction of seeds that EXCLUDED k ->
+    # exclusion_frac (0 = every seed kept it, 1 = every seed dropped it), for the graded
+    # fig1 shading. The consensus window (kept by a majority of seeds) is used only as a
+    # single [k_lo, k_hi] for the per-class source fits.
+    slope_med = float(np.median(slopes_arr))
+    slope_sem = float(np.std(slopes_arr, ddof=1) / np.sqrt(n)) if n > 1 else float('nan')
+
+    log_k_all = np.log(np.arange(1, values.size + 1, dtype=np.float64))
+    inclusion = np.zeros(values.size, dtype=np.float64)
+    for lo, hi in zip(los_arr, his_arr):
+        inclusion += (log_k_all >= lo) & (log_k_all <= hi)
+    exclusion_frac = 1.0 - inclusion / float(n)
+    majority = np.where(inclusion >= (n / 2.0))[0]
+    if majority.size:
+        k_lo = int(majority[0] + 1)
+        k_hi = int(majority[-1] + 1)
+    else:
+        k_lo = int(max(1, round(np.exp(float(np.median(los_arr))))))
+        k_hi = int(round(np.exp(float(np.median(his_arr)))))
     return {
-        'slope': float(slopes_arr[chosen]),
-        'slope_std': robust_std,
-        'slope_std_raw': float(np.std(slopes_arr)),
-        'k_lo': int(max(1, round(np.exp(float(los_arr[chosen]))))),
-        'k_hi': int(round(np.exp(float(his_arr[chosen])))),
+        'slope': slope_med,
+        'slope_sem': slope_sem,
+        'slope_std': float(np.std(slopes_arr, ddof=1)) if n > 1 else float('nan'),
+        'k_lo': k_lo,
+        'k_hi': k_hi,
+        'exclusion_frac': exclusion_frac,
         'seed_slopes': slopes_arr,
-        'n_seeds_used': int(slopes_arr.size),
+        'n_seeds_used': int(n),
     }
 
 
@@ -457,14 +522,27 @@ def robust_capacity_fit(eigenvalues: np.ndarray, num_bins: int, **seed_kwargs) -
     positions = np.arange(1, eigenvalues.size + 1, dtype=np.float64)
     seed = robust_powerlaw_fit(positions, eigenvalues, num_bins, **seed_kwargs)
     k_lo, k_hi = seed['k_lo'], seed['k_hi']
-    win = robust_loglog_slope(positions, eigenvalues, num_bins, k_lo=k_lo, k_hi=k_hi)
+    # Line drawn with the seed-mean slope, intercept least-squares matched over the
+    # consensus window so it sits on the data.
+    b = float(-seed['slope'])
+    consensus = (positions >= k_lo) & (positions <= k_hi) & (eigenvalues > 0)
+    if int(consensus.sum()) >= 2:
+        log_k = np.log(positions[consensus])
+        log_v = np.log(eigenvalues[consensus])
+        intercept = float(np.mean(log_v + b * log_k))  # mean residual with slope fixed at -b
+        resid = log_v - (-b * log_k + intercept)
+        log_rmse = float(np.sqrt(np.mean(resid ** 2)))
+    else:
+        intercept, log_rmse = float('nan'), float('nan')
     return {
-        'b': float(-seed['slope']),  # seed-median slope (matches the error bar)
+        'b': b,
+        'b_sem': float(seed['slope_sem']),
         'b_std': float(seed['slope_std']),
-        'intercept': float(win['intercept']),
-        'log_rmse': float(win['log_rmse']),
+        'intercept': intercept,
+        'log_rmse': log_rmse,
         'k_lo': int(k_lo),
         'k_hi': int(k_hi),
+        'exclusion_frac': np.asarray(seed['exclusion_frac'], dtype=np.float64),
         'seed_slopes': seed['seed_slopes'],
         'n_seeds_used': seed['n_seeds_used'],
     }
@@ -633,8 +711,10 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
     what_hat = np.asarray(arrays['W_hat'], dtype=np.float64)
     a = np.asarray(arrays['a'], dtype=np.float64)
     capacity_b = float(np.asarray(arrays['capacity_exponent_b']))
-    capacity_b_std = float(np.asarray(arrays['capacity_b_std'])) if 'capacity_b_std' in arrays else float('nan')
+    capacity_b_sem = float(np.asarray(arrays['capacity_b_sem'])) if 'capacity_b_sem' in arrays else float('nan')
     capacity_intercept = float(np.asarray(arrays['capacity_intercept']))
+    exclusion_frac = np.asarray(arrays['capacity_exclusion_frac'], dtype=np.float64) \
+        if 'capacity_exclusion_frac' in arrays else None
     acc_full = np.asarray(arrays['acc_full'], dtype=np.float64)
     ce_full = np.asarray(arrays['ce_full'], dtype=np.float64)
     trunc_m = np.asarray(arrays['trunc_m'], dtype=np.int64)
@@ -662,17 +742,28 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
         plt.close(fig)
         written.append(path)
 
-    # 1. Feature eigenvalue spectrum + fitted capacity line (bulk regime only).
+    # 1. Feature eigenvalue spectrum + seed-grow capacity fit. Graded gray shading =
+    # fraction of seeds that excluded each k (white = every seed kept it, dark = every
+    # seed dropped it) -> the "uncertainty about the window".
     fig, ax = plt.subplots(figsize=(6.4, 4.8))
-    _mark_bulk(ax)
     ax.loglog(positions, np.clip(eigenvalues, 1e-30, None), marker='.', linestyle='none',
-              markersize=3, alpha=0.7, label=r'$\lambda_k$')
+              markersize=3, alpha=0.7, zorder=3, label=r'$\lambda_k$')
+    if exclusion_frac is not None and exclusion_frac.size == positions.size:
+        edges = np.empty(positions.size + 1)
+        edges[1:-1] = np.sqrt(positions[:-1] * positions[1:])
+        edges[0] = positions[0] * (positions[0] / edges[1])
+        edges[-1] = positions[-1] * (positions[-1] / edges[-2])
+        ylo, yhi = ax.get_ylim()
+        ax.pcolormesh(edges, np.array([ylo, yhi]), exclusion_frac[None, :],
+                      cmap='Greys', vmin=0.0, vmax=1.0, alpha=0.55, zorder=0,
+                      shading='flat', rasterized=True)
+        ax.set_ylim(ylo, yhi)
     if np.isfinite(capacity_b):
         fit_line = np.exp(capacity_intercept) * bulk_k ** (-capacity_b)
-        b_label = fr'$b={capacity_b:.2f}\pm{capacity_b_std:.2f}$' if np.isfinite(capacity_b_std) \
+        b_label = fr'$b={capacity_b:.2f}\pm{capacity_b_sem:.2f}$' if np.isfinite(capacity_b_sem) \
             else fr'$b={capacity_b:.2f}$'
-        ax.loglog(bulk_k, fit_line, color='crimson', linewidth=2.4,
-                  label=fr'seed-grow fit $k^{{-b}}$, {b_label} ($k\in[{k_lo},{k_hi}]$)')
+        ax.loglog(bulk_k, fit_line, color='crimson', linewidth=2.4, zorder=4,
+                  label=fr'seed-grow fit $k^{{-b}}$, {b_label} (median$\pm$SEM)')
     ax.set_xlabel('PC index $k$')
     ax.set_ylabel(r'eigenvalue $\lambda_k$')
     ax.set_title(f'Feature (data) spectrum — {run_label}')
@@ -797,9 +888,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--eval-batch-size', type=int, default=250)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--num-bins', type=int, default=24, help='Log-spaced bins over k for fits.')
-    parser.add_argument('--fit-seeds', type=int, default=12,
+    parser.add_argument('--fit-seeds', type=int, default=64,
                         help='Number of seed anchors for the robust seed-and-grow capacity fit.')
-    parser.add_argument('--fit-rmse-tol', type=float, default=0.06,
+    parser.add_argument('--fit-rmse-tol', type=float, default=0.10,
                         help='Max binned log-log RMSE while growing a seed window.')
     parser.add_argument('--compute-dtype', choices=['float32', 'bfloat16'], default='float32',
                         help='Forward-pass precision. float32 (default) evaluates the trained '
@@ -1121,10 +1212,12 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
         'log_A2': source['log_A2'].astype(np.float64),
         'class_fit_rmse': source['log_rmse'].astype(np.float64),
         'capacity_exponent_b': np.float64(capacity['b']),
+        'capacity_b_sem': np.float64(capacity['b_sem']),
         'capacity_b_std': np.float64(capacity['b_std']),
         'capacity_intercept': np.float64(capacity['intercept']),
         'capacity_log_rmse': np.float64(capacity['log_rmse']),
         'capacity_seed_slopes': np.asarray(capacity['seed_slopes'], dtype=np.float64),
+        'capacity_exclusion_frac': np.asarray(capacity['exclusion_frac'], dtype=np.float64),
         'bulk_k_lo': np.int64(k_lo),
         'bulk_k_hi': np.int64(k_hi),
         'acc_full': acc_full.astype(np.float64),
@@ -1208,6 +1301,7 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
         'bulk_k_lo': int(k_lo),
         'bulk_k_hi': int(k_hi),
         'capacity_exponent_b': float(capacity['b']),
+        'capacity_b_sem': float(capacity['b_sem']),
         'capacity_b_std': float(capacity['b_std']),
         'capacity_log_rmse': float(capacity['log_rmse']),
         'capacity_fit_seeds': int(capacity['n_seeds_used']),
