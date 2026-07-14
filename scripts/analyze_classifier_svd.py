@@ -25,6 +25,8 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+import seaborn as sns  # noqa: E402
+from matplotlib.colors import LogNorm  # noqa: E402
 
 from scripts.analyze_classifier_powerlaw import (  # noqa: E402
     robust_loglog_slope,
@@ -116,6 +118,29 @@ def _render(result: dict, run_label: str, example_modes: list[int], output_dir: 
             ax.axvspan(0.9, k_lo, color='0.85', alpha=0.5, zorder=0)
         if k_hi < num_features:
             ax.axvspan(k_hi, num_features * 1.05, color='0.85', alpha=0.5, zorder=0)
+
+    # 0. Heatmaps of r_jk^2 (rows j sorted by singular value, cols k sorted by eigenvalue).
+    xt = max(1, num_features // 8)
+    yt = max(1, num_modes // 8)
+    for scale in ('linear', 'log'):
+        fig, ax = plt.subplots(figsize=(7.2, 6.0))
+        if scale == 'log':
+            positive = right_sq[right_sq > 0]
+            vmin = float(np.quantile(positive, 0.02)) if positive.size else 1e-12
+            vmax = float(right_sq.max())
+            norm = LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax)
+            sns.heatmap(right_sq, cmap='magma', norm=norm, ax=ax,
+                        xticklabels=xt, yticklabels=yt,
+                        cbar_kws={'label': r'$r_{jk}^2$ (log color)'})
+        else:
+            vmax = float(np.quantile(right_sq, 0.999))
+            sns.heatmap(right_sq, cmap='magma', vmin=0.0, vmax=vmax, ax=ax,
+                        xticklabels=xt, yticklabels=yt,
+                        cbar_kws={'label': r'$r_{jk}^2$'})
+        ax.set_xlabel(r'PC index $k$ (sorted by eigenvalue $\lambda_k$)')
+        ax.set_ylabel(r'singular mode $j$ (sorted by singular value $s_j$)')
+        ax.set_title(f'$r_{{jk}}^2$ heatmap ({scale} color) — {run_label}')
+        _save(fig, f'fig_svd_r2_heatmap_{scale}')
 
     # 1. Right-singular-vector profiles r_jk^2 vs k for example modes (fig2 analog).
     fig, ax = plt.subplots(figsize=(6.6, 4.9))

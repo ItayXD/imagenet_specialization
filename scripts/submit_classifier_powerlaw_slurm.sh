@@ -6,6 +6,9 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=96G
 #SBATCH --time=04:00:00
+# Keep SLURM's default logs off $HOME (netscratch dir must exist at submit time).
+#SBATCH --output=/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/slurm_logs/classifier_powerlaw_%j.out
+#SBATCH --error=/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/slurm_logs/classifier_powerlaw_%j.err
 
 set -euo pipefail
 
