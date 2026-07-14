@@ -595,7 +595,10 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dataset', choices=['imagenet', 'cifar5m'], default='imagenet')
     parser.add_argument('--optimizer-key', choices=['sgd', 'adam', 'muon'], default='sgd')
-    parser.add_argument('--width', type=int, default=64)
+    parser.add_argument('--width', type=int, default=64, help='Single width (used if --widths is unset).')
+    parser.add_argument('--widths', type=int, nargs='*', default=None,
+                        help='Multiple widths to analyze in one process (data is loaded once). '
+                             'Each width writes to <output-root>/<dataset>/<optimizer>_w<width>.')
     parser.add_argument('--base-save-dir', default='', help='Override dataset save root.')
     parser.add_argument('--run-id', default='', help='Optional explicit run id override.')
     parser.add_argument('--run-id-resolution', choices=['exact', 'latest_prefix', 'auto'],
@@ -616,9 +619,16 @@ def parse_args() -> argparse.Namespace:
                              'bfloat16 reproduces the model\'s training-time inference noise.')
     parser.add_argument('--trunc-list', type=int, nargs='*', default=None,
                         help='Retained-PC counts m. Default is a log-spaced schedule.')
-    parser.add_argument('--output-dir', required=True)
+    parser.add_argument('--output-dir', default='',
+                        help='Output dir for a single width. Ignored when --widths is set.')
+    parser.add_argument('--output-root', default='',
+                        help='Parent dir for multi-width runs; defaults to '
+                             '<base-save-dir>/classifier_powerlaw.')
     parser.add_argument('--no-plots', action='store_true', help='Skip rendering figures.')
-    return parser.parse_args()
+    args = parser.parse_args()
+    if not args.widths and not args.output_dir:
+        parser.error('Provide --output-dir for a single width, or --widths for a multi-width run.')
+    return args
 
 
 def _default_base_save_dir(dataset: str) -> str:
@@ -762,10 +772,9 @@ def _cast_tree(tree, dtype):
     return jax.tree_util.tree_map(_cast, tree)
 
 
-def main() -> None:
-    args = parse_args()
-    import jax.numpy as jnp
-
+def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
+                   base_save_dir, run_spec, run_id_resolution, cached_batches) -> None:
+    """Restore one width, extract features from the cached batches, fit, and save."""
     from scripts.analyze_exchangeability import (
         _collect_target_steps,
         _list_group_dirs,
@@ -773,22 +782,20 @@ def main() -> None:
         _resolve_width_dirs,
         _restore_state_checkpoint,
     )
-    from scripts.eval_singular_ablation import default_run_specs
-    from src.experiment.dataset_specs import get_dataset_spec
     from src.experiment.model.flax_mup.resnet import ResNet18
 
-    dataset = args.dataset
-    width = int(args.width)
-    base_save_dir = args.base_save_dir or _default_base_save_dir(dataset)
-    run_spec = default_run_specs(dataset)[args.optimizer_key]
+    width = int(width)
     run_id = args.run_id or run_spec.width_to_run_id[width]
-    run_id_resolution = args.run_id_resolution
-    output_dir = os.path.abspath(args.output_dir)
+    run_id_resolution = run_id_resolution
+    if args.output_dir and not args.widths:
+        output_dir = os.path.abspath(args.output_dir)
+    else:
+        root = os.path.abspath(args.output_root) if args.output_root \
+            else os.path.join(base_save_dir, 'classifier_powerlaw')
+        output_dir = os.path.join(root, dataset, f'{args.optimizer_key}_w{width}')
     os.makedirs(output_dir, exist_ok=True)
-
-    print(f'dataset={dataset} optimizer={run_spec.legend_label} width={width}')
-    print(f'base_save_dir={base_save_dir}')
-    print(f'run_id={run_id} resolution={run_id_resolution}')
+    print(f'\n=== dataset={dataset} optimizer={run_spec.legend_label} width={width} '
+          f'run_id={run_id} -> {output_dir} ===')
 
     width_dirs, width_sources = _resolve_width_dirs(
         base_save_dir=base_save_dir,
@@ -818,11 +825,8 @@ def main() -> None:
     member = members[0]
     print(f'restored {len(members)} member(s); using member 0 from {state_dir}')
 
-    spec = get_dataset_spec(dataset)
-    compute_dtype = jnp.float32 if args.compute_dtype == 'float32' else jnp.bfloat16
-    print(f'compute_dtype={args.compute_dtype}')
     model = ResNet18(
-        num_classes=spec.num_classes,
+        num_classes=num_classes,
         num_filters=width,
         param_dtype=compute_dtype,
         stem_type=spec.stem_type,
@@ -833,17 +837,9 @@ def main() -> None:
         'mup': _cast_tree(member['mup'], compute_dtype),
     }
 
-    loader = _build_eval_loader(
-        dataset=dataset,
-        num_images=int(args.num_images),
-        seed=int(args.seed),
-        batch_size=int(args.eval_batch_size),
-        num_workers=int(args.num_workers),
-    )
     print('extracting features...')
-    features, model_logits, labels = _extract_features(model, variables, loader)
+    features, model_logits, labels = _extract_features(model, variables, cached_batches)
     num_samples, num_features = features.shape
-    num_classes = spec.num_classes
     print(f'features={features.shape} logits={model_logits.shape} labels={labels.shape}')
 
     weight_eff, bias, divisor = _classifier_weight_and_bias(member)
@@ -1050,6 +1046,60 @@ def main() -> None:
             print(f'wrote {path}')
 
     print(f'done; outputs under {output_dir}')
+
+
+def main() -> None:
+    args = parse_args()
+    import jax.numpy as jnp
+
+    from scripts.eval_singular_ablation import default_run_specs
+    from src.experiment.dataset_specs import get_dataset_spec
+
+    dataset = args.dataset
+    widths = [int(w) for w in args.widths] if args.widths else [int(args.width)]
+    base_save_dir = args.base_save_dir or _default_base_save_dir(dataset)
+    run_spec = default_run_specs(dataset)[args.optimizer_key]
+    spec = get_dataset_spec(dataset)
+    num_classes = spec.num_classes
+    compute_dtype = jnp.float32 if args.compute_dtype == 'float32' else jnp.bfloat16
+    print(f'dataset={dataset} optimizer={run_spec.legend_label} widths={widths}')
+    print(f'base_save_dir={base_save_dir} compute_dtype={args.compute_dtype}')
+
+    # Load the eval data once: it is identical across widths (and optimizers) for a
+    # dataset, so all widths in this job reuse the same cached batches.
+    print(f'loading {dataset} eval data once '
+          f'(num_images={args.num_images}, workers={args.num_workers})...')
+    loader = _build_eval_loader(
+        dataset=dataset,
+        num_images=int(args.num_images),
+        seed=int(args.seed),
+        batch_size=int(args.eval_batch_size),
+        num_workers=int(args.num_workers),
+    )
+    cached_batches = [(np.asarray(bx), np.asarray(by)) for bx, by in loader]
+    del loader
+    n_imgs = int(sum(np.asarray(by).reshape(-1).shape[0] for _, by in cached_batches))
+    print(f'cached {len(cached_batches)} batches ({n_imgs} images)')
+
+    failures: list[tuple[int, str]] = []
+    for width in widths:
+        try:
+            _analyze_width(
+                width=width, args=args, dataset=dataset, num_classes=num_classes,
+                compute_dtype=compute_dtype, spec=spec, base_save_dir=base_save_dir,
+                run_spec=run_spec, run_id_resolution=args.run_id_resolution,
+                cached_batches=cached_batches,
+            )
+        except Exception as exc:  # keep going so one bad width doesn't lose the rest
+            import traceback
+
+            traceback.print_exc()
+            failures.append((int(width), repr(exc)))
+
+    if failures:
+        print(f'FAILURES ({len(failures)}): {failures}')
+        raise SystemExit(1)
+    print(f'all done for widths {widths}')
 
 
 if __name__ == '__main__':
