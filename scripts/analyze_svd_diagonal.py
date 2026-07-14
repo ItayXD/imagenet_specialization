@@ -27,6 +27,7 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
+from matplotlib.colors import LogNorm  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -178,6 +179,56 @@ def _profile_over(band: np.ndarray, lo: int, hi: int) -> np.ndarray:
         return np.nanmean(band[lo:hi, :], axis=0)
 
 
+def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 6) -> tuple:
+    """Find a breakpoint splitting (x,y) into two log-log power-law segments.
+
+    Scans candidate breakpoints and picks the one minimizing the combined residual sum of
+    squares of two independent log-log line fits. Returns (breakpoint_x, low_fit, high_fit)
+    where each *_fit is a dict from _loglog_fit; breakpoint_x is None if too few points.
+    """
+    m = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
+    x, y = x[m], y[m]
+    if x.size < 2 * min_seg + 1:
+        return None, _loglog_fit(x, y), {'slope': float('nan'), 'r2': float('nan')}
+    lx, ly = np.log(x), np.log(y)
+
+    def _sse(a, b):
+        if a.size < 2:
+            return np.inf, (float('nan'), float('nan'))
+        s, c = np.polyfit(a, b, 1)
+        return float(np.sum((b - (s * a + c)) ** 2)), (float(s), float(c))
+
+    best = None
+    for bi in range(min_seg, x.size - min_seg):
+        sse_lo, _ = _sse(lx[:bi], ly[:bi])
+        sse_hi, _ = _sse(lx[bi:], ly[bi:])
+        total = sse_lo + sse_hi
+        if best is None or total < best[0]:
+            best = (total, bi)
+    bi = best[1]
+    return float(x[bi]), _loglog_fit(x[:bi], y[:bi]), _loglog_fit(x[bi:], y[bi:])
+
+
+def _shape_crossover(x: np.ndarray, exp_r2: np.ndarray, gauss_r2: np.ndarray) -> float:
+    """First position where the Gaussian fit overtakes the exponential fit (smoothed).
+
+    Uses the sign of a lightly-smoothed (gaussian_r2 - exponential_r2) along i; returns the
+    x where it first turns positive and stays positive, or NaN if exp stays preferred.
+    """
+    m = np.isfinite(x) & np.isfinite(exp_r2) & np.isfinite(gauss_r2)
+    x, diff = x[m], (gauss_r2[m] - exp_r2[m])
+    if x.size < 5:
+        return float('nan')
+    order = np.argsort(x)
+    x, diff = x[order], diff[order]
+    k = min(5, diff.size)
+    smooth = np.convolve(diff, np.ones(k) / k, mode='same')
+    for i in range(smooth.size):
+        if smooth[i] > 0 and np.all(smooth[i:] >= -1e-3):
+            return float(x[i])
+    return float('nan')
+
+
 def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) -> dict:
     num_modes, num_features = right_sq.shape
     n = min(num_modes, num_features)
@@ -218,8 +269,7 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
     i_cross = int(min(i_cross, n // 3))
     i_probe_lo = 6
     probe_positions = list(range(i_probe_lo, max(i_probe_lo + 1, i_cross + 1)))
-    ell_by_i = np.full(n + 1, np.nan)
-    width_bx_list, ell_i = [], []
+    width_bx_list, ell_i, exp_r2_i, gauss_r2_i = [], [], [], []
     shape_profiles, shapes = {}, {}
     highlight = {int(round(x)) for x in np.linspace(i_probe_lo, max(i_probe_lo, i_cross), 5)}
     all_verdicts = []
@@ -233,20 +283,32 @@ def analyze(right_sq: np.ndarray, *, max_offset: int, transverse_smooth: int) ->
         if np.isfinite(sh.get('exponential_ell', np.nan)) and sh['best'] != 'undetermined':
             width_bx_list.append(float(c))
             ell_i.append(float(sh['exponential_ell']))
-            ell_by_i[c] = float(sh['exponential_ell'])
+            exp_r2_i.append(float(sh['exponential_r2']))
+            gauss_r2_i.append(float(sh['gaussian_r2']))
             all_verdicts.append(sh['best'])
     width_bx = np.asarray(width_bx_list)
     width_by = np.asarray(ell_i)  # transverse "width" = exponential length ell(i), dense in i
+    exp_r2_arr = np.asarray(exp_r2_i)
+    gauss_r2_arr = np.asarray(gauss_r2_i)
     width_fit = _loglog_fit(width_bx, width_by)
 
-    # Majority transverse-shape verdict across ALL resolvable dense probes.
+    # (1) Is ell(i) a power law only up to a break, then something else? Piecewise fit:
+    # scan a breakpoint and fit a power law on each side; also fit the low-i segment alone.
+    breakpoint, low_fit, high_fit = _piecewise_powerlaw(width_bx, width_by)
+    # (2) Shape crossover: the i at which the cross-section stops being exponential-preferred
+    # and becomes Gaussian-preferred (a sharp change of transverse shape along the diagonal).
+    shape_cross = _shape_crossover(width_bx, exp_r2_arr, gauss_r2_arr)
+
     shape_verdict = max(set(all_verdicts), key=all_verdicts.count) if all_verdicts else 'undetermined'
 
     return {
         'offsets': offsets, 'floor': floor, 'positions': positions,
         'amp': amp, 'excess_amp': excess_amp,
         'amp_bx': amp_bx, 'amp_by': amp_by, 'width_bx': width_bx, 'width_by': width_by,
+        'exp_r2': exp_r2_arr, 'gauss_r2': gauss_r2_arr,
         'long_fit': long_fit, 'width_fit': width_fit, 'shape_verdict': shape_verdict,
+        'breakpoint': breakpoint, 'low_fit': low_fit, 'high_fit': high_fit,
+        'shape_crossover': shape_cross,
         'long_range': (i_lo, i_hi), 'i_cross': int(i_cross),
         'shape_profiles': shape_profiles, 'shapes': shapes,
         'n': n, 'num_features': num_features,
@@ -288,20 +350,45 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     ax.legend(fontsize=8)
     _save(fig, 'fig_svd_diag_longitudinal')
 
-    # 2. Transverse width w(i) (HWHM, log-binned) vs i, log-log, with power-law fit.
-    fig, ax = plt.subplots(figsize=(6.6, 4.9))
+    # 2. Transverse length ell(i): single fit + two-segment (breakpoint) fit + shape crossover.
+    fig, axes = plt.subplots(1, 2, figsize=(12.0, 4.9))
+    ax = axes[0]
     ax.loglog(res['width_bx'], np.clip(res['width_by'], 1e-30, None), '.', ms=4,
-              color='seagreen', label=r'exponential length $\ell(i)$ (every $i$)')
-    wf = res['width_fit']
-    if np.isfinite(wf['slope']) and res['width_bx'].size:
-        xs = np.linspace(res['width_bx'].min(), res['width_bx'].max(), 50)
-        ax.loglog(xs, np.exp(wf['intercept']) * xs ** wf['slope'], color='crimson', lw=2.2,
-                  label=fr"fit $i^{{q}}$, $q={wf['slope']:.2f}$ ($R^2={wf['r2']:.3f}$)")
+              color='seagreen', label=r'$\ell(i)$ (every $i$)')
+    bp, lo_fit, hi_fit = res['breakpoint'], res['low_fit'], res['high_fit']
+    if bp is not None and np.isfinite(lo_fit['slope']):
+        xlo = np.linspace(res['width_bx'].min(), bp, 40)
+        ax.loglog(xlo, np.exp(lo_fit['intercept']) * xlo ** lo_fit['slope'], color='crimson', lw=2.4,
+                  label=fr"low: $i^{{{lo_fit['slope']:.2f}}}$ ($R^2$={lo_fit['r2']:.3f})")
+        xhi = np.linspace(bp, res['width_bx'].max(), 40)
+        if np.isfinite(hi_fit['slope']):
+            ax.loglog(xhi, np.exp(hi_fit['intercept']) * xhi ** hi_fit['slope'], color='purple',
+                      lw=2.4, label=fr"high: $i^{{{hi_fit['slope']:.2f}}}$ ($R^2$={hi_fit['r2']:.3f})")
+        ax.axvline(bp, color='k', ls='--', lw=1.2, label=f'break i~{bp:.0f}')
+    if np.isfinite(res['shape_crossover']):
+        ax.axvline(res['shape_crossover'], color='darkorange', ls=':', lw=1.6,
+                   label=f"exp→gauss i~{res['shape_crossover']:.0f}")
     ax.set_xlabel('diagonal position $i$')
     ax.set_ylabel(r'transverse length $\ell(i)$')
-    ax.set_title(f'Transverse band width vs position — {run_label}')
+    ax.set_title('length vs position (piecewise)')
     ax.grid(True, which='both', alpha=0.25)
     ax.legend(fontsize=8)
+    # Right panel: transverse-shape preference (Gaussian R^2 - exponential R^2) vs i.
+    ax = axes[1]
+    diff = res['gauss_r2'] - res['exp_r2']
+    ax.plot(res['width_bx'], diff, '.', ms=4, color='slateblue')
+    ax.axhline(0.0, color='0.5', ls='--', lw=1)
+    if np.isfinite(res['shape_crossover']):
+        ax.axvline(res['shape_crossover'], color='darkorange', ls=':', lw=1.6,
+                   label=f"crossover i~{res['shape_crossover']:.0f}")
+        ax.legend(fontsize=8)
+    ax.set_xscale('log')
+    ax.set_xlabel('diagonal position $i$')
+    ax.set_ylabel(r'$R^2_\mathrm{gauss} - R^2_\mathrm{exp}$  (>0: Gaussian better)')
+    ax.set_title('transverse shape preference vs position')
+    ax.grid(True, which='both', alpha=0.25)
+    fig.suptitle(f'Transverse band width & shape vs position — {run_label}')
+    fig.tight_layout(rect=(0, 0, 1, 0.95))
     _save(fig, 'fig_svd_diag_width')
 
     # 3. Transverse core cross-sections: semilog-y vs |d| (exp->line) and vs d^2 (gauss->line).
@@ -441,32 +528,172 @@ def _render_haar(h: dict, run_label: str, output_dir: str, fmt: str) -> str:
     return path
 
 
+def _render_r2_heatmap(right_sq: np.ndarray, run_label: str, output_dir: str, fmt: str) -> list[str]:
+    """r_jk^2 heatmap with square cells (aspect='equal'), so the diagonal has slope 1."""
+    written = []
+    p, dim = right_sq.shape
+    height = 6.0
+    width = float(np.clip(height * dim / max(p, 1), 4.0, 22.0))
+    for scale in ('linear', 'log'):
+        fig, ax = plt.subplots(figsize=(width + 1.3, height))
+        if scale == 'log':
+            pos = right_sq[right_sq > 0]
+            vmax = float(right_sq.max())
+            vmin = float(np.quantile(pos, 0.02)) if pos.size else vmax * 1e-6
+            im = ax.imshow(right_sq, aspect='equal', origin='upper', cmap='magma',
+                           norm=LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax),
+                           interpolation='nearest')
+        else:
+            im = ax.imshow(right_sq, aspect='equal', origin='upper', cmap='magma',
+                           vmin=0.0, vmax=float(np.quantile(right_sq, 0.999)),
+                           interpolation='nearest')
+        ax.set_xlabel(r'PC index $k$ (by eigenvalue $\lambda_k$)')
+        ax.set_ylabel(r'singular mode $j$ (by singular value $s_j$)')
+        ax.set_title(f'$r_{{jk}}^2$ heatmap ({scale}, square cells) — {run_label}')
+        fig.colorbar(im, ax=ax, fraction=0.046 * p / max(dim, 1) + 0.02,
+                     label=r'$r_{jk}^2$' + (' (log)' if scale == 'log' else ''))
+        path = os.path.join(output_dir, f'fig_svd_r2_heatmap_{scale}.{fmt}')
+        fig.savefig(path, bbox_inches='tight', dpi=200)
+        plt.close(fig)
+        written.append(path)
+    return written
+
+
+def robust_singular_powerlaw(s: np.ndarray) -> dict:
+    """Robust power-law fit s_j ~ j^{-c}, excluding the finite-dimension cliff.
+
+    Iteratively drops trailing points that fall far below a Theil-Sen (robust) log-log
+    line — i.e. the smallest singular value(s) on the cliff — then reports the Theil-Sen
+    slope and its confidence interval over the retained bulk. Works for few modes (CIFAR)
+    and many (ImageNet).
+    """
+    s = np.asarray(s, dtype=np.float64)
+    s = s[np.isfinite(s) & (s > 0)]
+    p = s.size
+    j = np.arange(1, p + 1, dtype=np.float64)
+    lx, ly = np.log(j), np.log(s)
+    try:
+        from scipy.stats import theilslopes
+        def _line(a, b):
+            sl, ic, lo, hi = theilslopes(b, a)
+            return float(sl), float(ic), float(lo), float(hi)
+    except Exception:
+        def _line(a, b):
+            sl, ic = np.polyfit(a, b, 1)
+            return float(sl), float(ic), float('nan'), float('nan')
+
+    # Exclude the finite-dimension "cliff": a CONTIGUOUS run of trailing modes that have
+    # collapsed far BELOW the robust Theil-Sen trend (e.g. CIFAR's rank-deficient last mode
+    # ~1e-7, or ImageNet's last few near-zero modes). Only the tail is trimmed -- never the
+    # head -- so a gradually-curving bulk is kept intact (its curvature shows up as R^2).
+    collapse_frac = 0.3
+    keep = np.ones(p, dtype=bool)
+    for _ in range(3):
+        idx = np.where(keep)[0]
+        if idx.size < 4:
+            break
+        sl, ic, _, _ = _line(lx[idx], ly[idx])
+        resid = ly - (sl * lx + ic)
+        new_keep = keep.copy()
+        for jj in idx[::-1]:  # scan from the largest kept mode downward
+            if resid[jj] < np.log(collapse_frac):
+                new_keep[jj] = False
+            else:
+                break  # first non-collapsed mode -> stop trimming the tail
+        if int(new_keep.sum()) < 4 or bool(np.all(new_keep == keep)):
+            keep = new_keep
+            break
+        keep = new_keep
+    idx = np.where(keep)[0]
+    sl, ic, lo_sl, hi_sl = _line(lx[idx], ly[idx])
+    pred = sl * lx[idx] + ic
+    ss_res = float(np.sum((ly[idx] - pred) ** 2))
+    ss_tot = float(np.sum((ly[idx] - ly[idx].mean()) ** 2))
+    r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+    return {'c': -sl, 'intercept': ic, 'r2': r2, 'c_ci': (-hi_sl, -lo_sl),
+            'j_lo': int(j[idx][0]), 'j_hi': int(j[idx][-1]), 'n_excluded': int((~keep).sum()),
+            'j': j, 's': s, 'keep': keep}
+
+
+def _render_singular(sfit: dict, run_label: str, output_dir: str, fmt: str) -> str:
+    j, s, keep = sfit['j'], sfit['s'], sfit['keep']
+    fig, ax = plt.subplots(figsize=(6.6, 4.9))
+    ax.loglog(j[keep], s[keep], 'o', ms=4, color='steelblue', label='kept')
+    if (~keep).any():
+        ax.loglog(j[~keep], s[~keep], 'x', ms=8, color='crimson', label='excluded (cliff)')
+    if np.isfinite(sfit['c']):
+        xs = np.linspace(sfit['j_lo'], sfit['j_hi'], 50)
+        ax.loglog(xs, np.exp(sfit['intercept']) * xs ** (-sfit['c']), color='crimson', lw=2.2,
+                  label=fr"Theil-Sen $j^{{-c}}$, $c={sfit['c']:.2f}$ ($R^2={sfit['r2']:.3f}$)")
+    ax.set_xlabel('singular mode index $j$')
+    ax.set_ylabel(r'singular value $s_j$')
+    ax.set_title(f'Classifier singular-value spectrum (robust) — {run_label}')
+    ax.grid(True, which='both', alpha=0.25)
+    ax.legend(fontsize=8)
+    path = os.path.join(output_dir, f'fig_svd_singular_values_robust.{fmt}')
+    fig.savefig(path, bbox_inches='tight', dpi=200)
+    plt.close(fig)
+    return path
+
+
 def main() -> None:
     args = parse_args()
     npz_path = os.path.join(args.results_dir, 'powerlaw_arrays.npz')
     data = np.load(npz_path, allow_pickle=True)
     what_hat = np.asarray(data['W_hat'], dtype=np.float64)
     run_label = str(data['run_label']) if 'run_label' in data.files else 'classifier_svd'
-    _, _, vt = np.linalg.svd(what_hat, full_matrices=False)
+    _, s_values, vt = np.linalg.svd(what_hat, full_matrices=False)
     right_sq = vt ** 2
+    p_modes = int(min(vt.shape))
+
+    svd_dir = os.path.abspath(args.output_dir) if args.output_dir \
+        else os.path.join(os.path.abspath(args.results_dir), 'svd')
+    output_dir = os.path.join(svd_dir, 'right')  # all R-related outputs live under svd/right/
+    os.makedirs(svd_dir, exist_ok=True)
+    os.makedirs(output_dir, exist_ok=True)
+    written = []
+
+    # (4) Robust singular-value power law s_j ~ j^-c (Theil-Sen, cliff-excluded). Always run
+    # (this is the one non-R quantity requested); lives under svd/ (NOT right/).
+    sfit = robust_singular_powerlaw(s_values)
+    print(f'run={run_label}  D={right_sq.shape[1]}  modes p={p_modes}')
+    print(f'singular values s_j ~ j^-c   : c={sfit["c"]:.3f} (R^2={sfit["r2"]:.3f}, '
+          f'j in [{sfit["j_lo"]},{sfit["j_hi"]}], excluded {sfit["n_excluded"]} cliff modes)')
+    with open(os.path.join(svd_dir, 'singular_powerlaw.json'), 'w', encoding='utf-8') as h:
+        json.dump({k: sfit[k] for k in ('c', 'intercept', 'r2', 'j_lo', 'j_hi', 'n_excluded')}, h, indent=2)
+    sing_path = _render_singular(sfit, run_label, svd_dir, args.format)
+    written.append(sing_path)
+
+    # The diagonal-band / Haar analysis of R needs many singular modes; skip when too few
+    # (e.g. CIFAR-5M has C=10 -> 10 modes). Only R data is generated, all under svd/right/.
+    if p_modes < 32:
+        print(f'only {p_modes} singular modes; skipping the R diagonal-band/Haar analysis '
+              f'(singular-value fit above is still written).')
+        for pth in written:
+            print(f'wrote {pth}')
+        return
 
     res = analyze(right_sq, max_offset=args.max_offset, transverse_smooth=args.transverse_smooth)
-    output_dir = os.path.abspath(args.output_dir) if args.output_dir \
-        else os.path.join(os.path.abspath(args.results_dir), 'svd')
-
     lf, wf = res['long_fit'], res['width_fit']
     mean_floor_1_over_D = 1.0 / res['num_features']
-    print(f'run={run_label}  n={res["n"]}  D={res["num_features"]}  '
-          f'median floor={res["floor"]:.3e}  (mean 1/D={mean_floor_1_over_D:.3e})')
-    print(f'longitudinal A(i)-floor ~ i^-p : p={-lf["slope"]:.3f} (R^2={lf["r2"]:.3f}, '
-          f'range i in [{res["long_range"][0]},{res["long_range"][1]}])')
+    print(f'  n={res["n"]}  median floor={res["floor"]:.3e}  (mean 1/D={mean_floor_1_over_D:.3e})')
+    print(f'longitudinal A(i)-floor ~ i^-p : p={-lf["slope"]:.3f} (R^2={lf["r2"]:.3f})')
     print(f'transverse shape (majority)    : {res["shape_verdict"]}')
     print(f'transverse length ell(i) ~ i^q : q={wf["slope"]:.3f} (R^2={wf["r2"]:.3f}, '
           f'n_probes={res["width_bx"].size})')
-    for c, sh in sorted(res['shapes'].items()):
-        print(f'  transverse shape @ i~{c:4d}: best={sh["best"]:11s} '
-              f'R2[gauss/exp/pow]={sh["gaussian_r2"]:.3f}/{sh["exponential_r2"]:.3f}/{sh["power_r2"]:.3f} '
-              f'(sigma={sh.get("gaussian_sigma", float("nan")):.2f}, ell={sh.get("exponential_ell", float("nan")):.2f})')
+    bp, lo_fit, hi_fit = res['breakpoint'], res['low_fit'], res['high_fit']
+    if bp is not None:
+        print(f'  piecewise ell(i): break at i~{bp:.0f}; '
+              f'low i^{lo_fit["slope"]:.2f} (R^2={lo_fit["r2"]:.3f}), '
+              f'high i^{hi_fit["slope"]:.2f} (R^2={hi_fit["r2"]:.3f})')
+    print(f'  transverse shape crossover (exp->gauss) at i~{res["shape_crossover"]:.0f}')
+
+    haar = haar_below_floor(vt, res['i_cross'], n_null=args.n_null, rng_seed=args.seed)
+    print(f'--- Haar test (floor crossing at mode i~{res["i_cross"]}) ---')
+    print(f'participation ratio: below={haar["pr_below_mean"]:.1f} above={haar["pr_above_mean"]:.1f} '
+          f'Haar D/3={res["num_features"]/3:.1f}; below z={haar["pr_below_z"]:.2f}')
+    print(f'diagonal percentile: below={haar["diag_below_mean"]:.3f} above={haar["diag_above_mean"]:.3f} '
+          f'(Haar 0.5); below z={haar["diag_below_z"]:.2f}')
 
     summary = {
         'run_label': run_label, 'n': int(res['n']), 'num_features': int(res['num_features']),
@@ -475,27 +702,30 @@ def main() -> None:
         'longitudinal_range': list(res['long_range']),
         'transverse_shape_verdict': res['shape_verdict'],
         'transverse_length_exponent_q': wf['slope'], 'transverse_length_r2': wf['r2'],
+        'ell_breakpoint': bp, 'ell_low_exponent': lo_fit['slope'], 'ell_low_r2': lo_fit['r2'],
+        'ell_high_exponent': hi_fit['slope'], 'ell_high_r2': hi_fit['r2'],
+        'shape_crossover_i': res['shape_crossover'],
         'transverse_shapes': {int(c): sh for c, sh in res['shapes'].items()},
+        'haar_below_floor': {k: (v if not isinstance(v, np.ndarray) else None) for k, v in haar.items()},
+        'singular_powerlaw': {k: sfit[k] for k in ('c', 'r2', 'j_lo', 'j_hi', 'n_excluded')},
     }
-    # Haar test: below the floor, are the right singular vectors random unit vectors?
-    haar = haar_below_floor(vt, res['i_cross'], n_null=args.n_null, rng_seed=args.seed)
-    print(f'--- Haar test (floor crossing at mode i~{res["i_cross"]}) ---')
-    print(f'participation ratio: below={haar["pr_below_mean"]:.1f} above={haar["pr_above_mean"]:.1f} '
-          f'Haar D/3={res["num_features"]/3:.1f} (null {haar["pr_null_mu"]:.1f}+/-{haar["pr_null_sd"]:.1f}); '
-          f'below z={haar["pr_below_z"]:.2f}')
-    print(f'diagonal percentile: below={haar["diag_below_mean"]:.3f} above={haar["diag_above_mean"]:.3f} '
-          f'(Haar 0.5); below z={haar["diag_below_z"]:.2f}')
-    print(f'pooled below-floor sqrt(D) r_jk vs N(0,1): KS={haar["ks_stat"]:.4f} p={haar["ks_p"]:.3g}')
 
-    summary['haar_below_floor'] = {k: (v if not isinstance(v, np.ndarray) else None)
-                                   for k, v in haar.items()}
-    os.makedirs(output_dir, exist_ok=True)
+    # Remove this script's earlier outputs that used to live directly under svd/ (now right/).
+    for stale in ('fig_svd_diag_longitudinal', 'fig_svd_diag_width', 'fig_svd_diag_transverse',
+                  'fig_svd_haar_below_floor', 'diagonal_band_summary'):
+        for ext in ('png', 'pdf', 'json'):
+            old = os.path.join(svd_dir, f'{stale}.{ext}')
+            if os.path.exists(old):
+                os.remove(old)
+
     with open(os.path.join(output_dir, 'diagonal_band_summary.json'), 'w', encoding='utf-8') as h:
         json.dump(summary, h, indent=2)
-    written = _render(res, run_label, output_dir, args.format)
+    written.extend(_render(res, run_label, output_dir, args.format))
     written.append(_render_haar(haar, run_label, output_dir, args.format))
-    for p in [os.path.join(output_dir, 'diagonal_band_summary.json'), *written]:
-        print(f'wrote {p}')
+    written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
+    written.append(os.path.join(output_dir, 'diagonal_band_summary.json'))
+    for pth in written:
+        print(f'wrote {pth}')
 
 
 if __name__ == '__main__':

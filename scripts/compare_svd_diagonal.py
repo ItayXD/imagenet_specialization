@@ -27,7 +27,7 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
 
-_RUN_RE = re.compile(r'(?P<dataset>[^/]+)/(?P<opt>sgd|adam|muon)_w(?P<width>\d+)/svd/')
+_RUN_RE = re.compile(r'(?P<dataset>[^/]+)/(?P<opt>sgd|adam|muon)_w(?P<width>\d+)/svd/right/')
 _COLOR = {('imagenet', 'sgd'): 'tab:blue', ('imagenet', 'muon'): 'tab:orange',
           ('cifar5m', 'sgd'): 'tab:green', ('cifar5m', 'muon'): 'tab:red'}
 
@@ -42,8 +42,8 @@ def parse_args() -> argparse.Namespace:
 
 def _load(results_root: str) -> dict:
     series: dict = {}
-    for path in sorted(glob.glob(os.path.join(results_root, '**', 'svd', 'diagonal_band_summary.json'),
-                                 recursive=True)):
+    for path in sorted(glob.glob(os.path.join(results_root, '**', 'svd', 'right',
+                                              'diagonal_band_summary.json'), recursive=True)):
         rel = os.path.relpath(path, results_root)
         m = _RUN_RE.search(rel.replace(os.sep, '/'))
         if not m:
@@ -51,6 +51,12 @@ def _load(results_root: str) -> dict:
         with open(path, encoding='utf-8') as h:
             d = json.load(h)
         haar = d.get('haar_below_floor', {})
+        # sibling singular-value fit (one level up, under svd/, not right/)
+        sing = {}
+        sing_path = os.path.join(os.path.dirname(os.path.dirname(path)), 'singular_powerlaw.json')
+        if os.path.exists(sing_path):
+            with open(sing_path, encoding='utf-8') as h:
+                sing = json.load(h)
         key = (m['dataset'], m['opt'])
         series.setdefault(key, []).append({
             'width': int(m['width']),
@@ -58,6 +64,11 @@ def _load(results_root: str) -> dict:
             'p_r2': d.get('longitudinal_r2', np.nan),
             'q': d.get('transverse_length_exponent_q', np.nan),
             'shape': d.get('transverse_shape_verdict', ''),
+            'ell_low': d.get('ell_low_exponent', np.nan),
+            'ell_break': d.get('ell_breakpoint', np.nan),
+            'shape_cross': d.get('shape_crossover_i', np.nan),
+            'sing_c': sing.get('c', np.nan),
+            'sing_r2': sing.get('r2', np.nan),
             'i_cross': haar.get('i_cross', np.nan),
             'D': d.get('num_features', np.nan),
             'diag_below': haar.get('diag_below_mean', np.nan),
@@ -78,15 +89,19 @@ def main() -> None:
 
     panels = [
         ('p', r'longitudinal exponent $p$  ($A(i)\sim i^{-p}$)'),
+        ('ell_low', r'transverse low-$i$ exponent  ($\ell\sim i^{q_\mathrm{low}}$)'),
+        ('ell_break', r'$\ell(i)$ breakpoint $i$'),
+        ('sing_c', r'singular-value exponent $c$  ($s_j\sim j^{-c}$)'),
         ('i_cross', r'structured-band size $i_\mathrm{cross}$ (# aligned modes)'),
         ('diag_below', r'below-floor diagonal percentile (0.5 = Haar)'),
         ('pr_ratio', r'below-floor PR / $(D/3)$  (1.0 = Haar)'),
     ]
-    fig, axes = plt.subplots(2, 2, figsize=(12.5, 9.0))
+    fig, axes = plt.subplots(2, 4, figsize=(20.0, 9.0))
     for (field, title), ax in zip(panels, axes.ravel()):
         for key, rows in series.items():
             widths = np.array([r['width'] for r in rows], dtype=float)
-            ys = np.array([float(r[field]) for r in rows], dtype=float)
+            ys = np.array([float(r[field]) if r[field] is not None else np.nan
+                           for r in rows], dtype=float)
             ax.plot(widths, ys, marker='o', color=_COLOR.get(key), label=f'{key[0]}/{key[1]}')
         ax.set_xscale('log', base=2)
         ax.set_xlabel('width (num_filters)')
@@ -99,6 +114,8 @@ def main() -> None:
             ax.axhline(1.0, color='0.5', ls='--', lw=1)
         if field == 'i_cross':
             ax.set_yscale('log')
+    for ax in axes.ravel()[len(panels):]:
+        ax.axis('off')
     axes.ravel()[0].legend(fontsize=9)
     fig.suptitle('SVD diagonal-band structure vs width', fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
@@ -109,14 +126,13 @@ def main() -> None:
 
     csv_path = os.path.join(os.path.abspath(args.output_dir), 'compare_svd_diagonal.csv')
     with open(csv_path, 'w', newline='', encoding='utf-8') as h:
-        w = csv.DictWriter(h, fieldnames=['dataset', 'optimizer', 'width', 'D', 'p', 'p_r2', 'q',
-                                          'shape', 'i_cross', 'diag_below', 'diag_above', 'pr_ratio'])
+        cols = ['width', 'D', 'p', 'p_r2', 'q', 'ell_low', 'ell_break', 'shape', 'shape_cross',
+                'sing_c', 'sing_r2', 'i_cross', 'diag_below', 'diag_above', 'pr_ratio']
+        w = csv.DictWriter(h, fieldnames=['dataset', 'optimizer', *cols])
         w.writeheader()
         for (dataset, opt), rows in series.items():
             for r in rows:
-                w.writerow({'dataset': dataset, 'optimizer': opt, **{k: r[k] for k in
-                            ['width', 'D', 'p', 'p_r2', 'q', 'shape', 'i_cross', 'diag_below',
-                             'diag_above', 'pr_ratio']}})
+                w.writerow({'dataset': dataset, 'optimizer': opt, **{k: r[k] for k in cols}})
     print(f'wrote {out}')
     print(f'wrote {csv_path}')
 
