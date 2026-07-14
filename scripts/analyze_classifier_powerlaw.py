@@ -457,9 +457,23 @@ def _default_base_save_dir(dataset: str) -> str:
                           '/n/netscratch/kempner_pehlevan_lab/Lab/ilavie/exchangeability_imagenet')
 
 
+def _make_loader(dataset_obj, batch_size: int, num_workers: int):
+    """DataLoader that uses a spawn context when workers>0 (JAX + os.fork() deadlock-safe)."""
+    from torch.utils.data import DataLoader
+
+    kwargs: dict[str, Any] = dict(batch_size=batch_size, shuffle=False,
+                                  num_workers=num_workers, drop_last=False)
+    if num_workers > 0:
+        import multiprocessing as mp
+
+        kwargs['multiprocessing_context'] = mp.get_context('spawn')
+        kwargs['persistent_workers'] = True
+    return DataLoader(dataset_obj, **kwargs)
+
+
 def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int, num_workers: int):
     """DataLoader over the val split (full set or a seeded subset), channels-last NHWC."""
-    from torch.utils.data import DataLoader, Subset
+    from torch.utils.data import Subset
 
     if str(dataset).strip().lower() == 'cifar5m':
         # Reuse the repo's CIFAR-5M probe subset builder (already seeded).
@@ -470,8 +484,7 @@ def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int
             raise ValueError('CIFAR5M_FOLDER must be set for cifar5m analysis.')
         size = num_images if num_images > 0 else 50000
         subset = _load_cifar5m_probe_subset_builder()(CIFAR5M_FOLDER, size, seed)
-        return DataLoader(subset, batch_size=batch_size, shuffle=False,
-                          num_workers=num_workers, drop_last=False)
+        return _make_loader(subset, batch_size, num_workers)
 
     from scripts.analyze_exchangeability import _load_imagenet_torchvision
     from src.run.constants import IMAGENET_FOLDER
@@ -501,8 +514,7 @@ def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int
         rng = np.random.default_rng(seed)
         indices = rng.choice(total, size=num_images, replace=False)
         dataset_obj = Subset(base_dataset, indices.tolist())
-    return DataLoader(dataset_obj, batch_size=batch_size, shuffle=False,
-                      num_workers=num_workers, drop_last=False)
+    return _make_loader(dataset_obj, batch_size, num_workers)
 
 
 def _extract_features(model, variables, loader) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
