@@ -135,7 +135,7 @@ def refit_run(run_dir: str, *, fit_seeds: int, fit_rmse_tol: float, rng_seed: in
         json.dump(summary, h, indent=2)
 
     _render_all_figures(data, run_dir, fmt=fmt)
-    return {'run': run_dir, 'b': cap['b'], 'b_sem': cap['b_sem'], 'k_lo': k_lo, 'k_hi': k_hi,
+    return {'run': run_dir, 'b': cap['b'], 'b_std': cap['b_std'], 'k_lo': k_lo, 'k_hi': k_hi,
             'rmse': cap['log_rmse'], 'a_mean': float(np.mean(finite_a)) if finite_a.size else float('nan')}
 
 
@@ -150,7 +150,7 @@ def main() -> None:
         res = refit_run(run_dir, fit_seeds=args.fit_seeds, fit_rmse_tol=args.fit_rmse_tol,
                         rng_seed=args.rng_seed, fmt=args.format)
         print(f'{os.path.relpath(run_dir, args.results_root):24s} '
-              f'b={res["b"]:.3f}+/-{res["b_sem"]:.3f} (SEM) consensus=[{res["k_lo"]},{res["k_hi"]}] '
+              f'b={res["b"]:.3f}+/-{res["b_std"]:.3f} (std) window=[{res["k_lo"]},{res["k_hi"]}] '
               f'rmse={res["rmse"]:.3f} a_mean={res["a_mean"]:.3f}')
 
 

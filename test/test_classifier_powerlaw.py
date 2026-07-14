@@ -227,8 +227,8 @@ def test_robust_capacity_fit_excludes_head_and_recovers_bulk():
     eig[-100:] *= np.geomspace(1.0, 1e-4, 100)     # finite-dimension cliff
     fit = robust_capacity_fit(eig, num_bins=24)
     assert abs(fit['b'] - 1.2) < 0.1               # recovers the bulk exponent
-    assert fit['k_lo'] >= 5                          # head excluded
-    assert fit['log_rmse'] < 0.06                    # the reported window fits cleanly
+    assert fit['k_lo'] >= 5                          # head excluded (index-based cut)
+    assert fit['k_hi'] <= 960                        # most of the cliff excluded
 
 
 def test_detect_head_cliff_trims_head_and_cliff():

@@ -399,20 +399,19 @@ def robust_powerlaw_fit(
     rng_seed: int = 0,
     init_frac: float = 0.06,
     step_frac: float = 0.02,
-    rmse_tol: float = 0.10,
+    rmse_tol: float = 0.14,
     min_points: int = 10,
     anchor_lo: float = 0.05,
     anchor_hi: float = 0.95,
 ) -> dict[str, Any]:
-    """Seed-and-grow power-law fit with a data-driven head/cliff trim.
+    """Seed-and-grow power-law fit for the asymptotic clean regime.
 
-    Detects and excludes the early head and finite-dimension cliff (detect_head_cliff),
-    plants ``n_seeds`` anchors across the trimmed region, and grows each window while the
-    binned-robust log-log RMSE stays clean (<= rmse_tol). Reports the MEDIAN seed slope
-    (robust to a seed straying into a steeper sub-regime) with the standard error of the
-    mean between seeds as the error bar, plus a per-k exclusion frequency for the graded
-    fig1 shading. The trim is per-run and its uncertainty is carried by the seed spread,
-    so it is not a hand-fixed window.
+    Cuts a small index-fraction head (``anchor_lo`` of D) and the finite-dimension
+    collapse, plants ``n_seeds`` index-uniform anchors between them, and grows each window
+    tolerantly (binned-robust log-log RMSE <= rmse_tol) toward larger k -- capturing the
+    clean high-k power law and extending it up. Reports the MEDIAN seed slope (robust to a
+    seed straying into the pre-cliff steepening) with the across-seed std as the error,
+    plus a per-k exclusion frequency for the graded fig1 shading.
     """
     positions = np.asarray(positions, dtype=np.float64).reshape(-1)
     values = np.asarray(values, dtype=np.float64).reshape(-1)
@@ -439,19 +438,21 @@ def robust_powerlaw_fit(
                 'exclusion_frac': np.zeros(values.size, dtype=np.float64),
                 'seed_slopes': np.asarray([s]), 'n_seeds_used': 1}
 
-    # Data-driven trim of the head and finite-dimension cliff (per run, position-agnostic).
-    # Seeds are planted inside the trimmed region and their growth is clamped to it, so the
-    # window still varies per seed (shown by the shading) but no seed strays into the head
-    # or cliff. This is NOT a hand-fixed window: [trim_lo, trim_hi] is detected from the
-    # data and its uncertainty is carried by the per-seed spread.
-    trim_lo, trim_hi = detect_head_cliff(values)
-    x_min = float(np.log(trim_lo))
-    x_max = float(np.log(trim_hi))
+    # Head cut: a small INDEX fraction (anchor_lo), since the large-eigenvalue head is a big
+    # log-space fraction but a tiny index fraction. Upper bound: the finite-dimension
+    # collapse (detect_head_cliff's cliff). Anchors are index-uniform in [floor, cliff] and
+    # grow tolerantly toward larger k; the asymptotic clean power law is captured, the
+    # collapse excluded. The median seed slope is the estimate (robust to a seed straying
+    # into the pre-cliff steepening); the across-seed std is the error.
+    n_positions = int(positions.max())
+    floor = max(1.0, anchor_lo * n_positions)
+    _, cliff = detect_head_cliff(values)
+    cliff = float(max(floor + 1.0, cliff))
+    x_min = float(np.log(floor))
+    x_max = float(np.log(cliff))
     span = x_max - x_min
     rng = np.random.default_rng(int(rng_seed))
-    # Log-uniform anchors within the trimmed bulk so seeds sample it evenly (linear-uniform
-    # would pile most seeds at high k for a wide trim).
-    anchors = x_min + rng.uniform(anchor_lo, anchor_hi, size=int(n_seeds)) * span
+    anchors = np.log(rng.uniform(floor, cliff, size=int(n_seeds)))
 
     slopes: list[float] = []
     los: list[float] = []
@@ -711,7 +712,7 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
     what_hat = np.asarray(arrays['W_hat'], dtype=np.float64)
     a = np.asarray(arrays['a'], dtype=np.float64)
     capacity_b = float(np.asarray(arrays['capacity_exponent_b']))
-    capacity_b_sem = float(np.asarray(arrays['capacity_b_sem'])) if 'capacity_b_sem' in arrays else float('nan')
+    capacity_b_std = float(np.asarray(arrays['capacity_b_std'])) if 'capacity_b_std' in arrays else float('nan')
     capacity_intercept = float(np.asarray(arrays['capacity_intercept']))
     exclusion_frac = np.asarray(arrays['capacity_exclusion_frac'], dtype=np.float64) \
         if 'capacity_exclusion_frac' in arrays else None
@@ -760,10 +761,10 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
         ax.set_ylim(ylo, yhi)
     if np.isfinite(capacity_b):
         fit_line = np.exp(capacity_intercept) * bulk_k ** (-capacity_b)
-        b_label = fr'$b={capacity_b:.2f}\pm{capacity_b_sem:.2f}$' if np.isfinite(capacity_b_sem) \
+        b_label = fr'$b={capacity_b:.2f}\pm{capacity_b_std:.2f}$' if np.isfinite(capacity_b_std) \
             else fr'$b={capacity_b:.2f}$'
         ax.loglog(bulk_k, fit_line, color='crimson', linewidth=2.4, zorder=4,
-                  label=fr'seed-grow fit $k^{{-b}}$, {b_label} (median$\pm$SEM)')
+                  label=fr'seed-grow fit $k^{{-b}}$, {b_label} (median$\pm$std)')
     ax.set_xlabel('PC index $k$')
     ax.set_ylabel(r'eigenvalue $\lambda_k$')
     ax.set_title(f'Feature (data) spectrum — {run_label}')

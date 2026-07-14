@@ -109,7 +109,7 @@ def _plot_scalars_vs_width(groups, output_dir, fmt) -> str:
         for field, _title, ax in panels:
             ys = np.array([float(r['summary'].get(field, np.nan)) for r in runs])
             if field == 'capacity_exponent_b':
-                yerr = np.array([float(r['summary'].get('capacity_b_sem', np.nan)) for r in runs])
+                yerr = np.array([float(r['summary'].get('capacity_b_std', np.nan)) for r in runs])
                 ax.errorbar(widths, ys, yerr=yerr, marker='o', color=color, label=label,
                             capsize=3, elinewidth=1.2)
             else:
