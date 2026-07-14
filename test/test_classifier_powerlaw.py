@@ -184,6 +184,30 @@ def test_per_class_accuracy_and_ce_toy():
     assert np.isnan(acc3[2]) and np.isnan(ce3[2])
 
 
+def test_haar_frame_orthonormal_and_orthogonal_to_ones():
+    from scripts.analyze_classifier_left_haar import _haar_frame
+
+    rng = np.random.default_rng(0)
+    q = _haar_frame(200, 50, rng)
+    assert q.shape == (200, 50)
+    assert np.allclose(q.T @ q, np.eye(50), atol=1e-8)          # orthonormal columns
+    assert np.max(np.abs(q.sum(axis=0))) < 1e-8                  # each column orthogonal to 1
+
+
+def test_haar_null_is_self_consistent():
+    # A genuine Haar frame should NOT look heterogeneous vs the Haar null (|z| small).
+    from scripts.analyze_classifier_left_haar import _haar_frame, _row_stats, _zscore
+
+    rng = np.random.default_rng(1)
+    c, p = 400, 128
+    s2 = np.arange(1, p + 1, dtype=np.float64) ** (-1.0)
+    q = _haar_frame(c, p, rng)
+    emp_std = float(np.std(_row_stats(q, s2)['n']))
+    null = np.array([np.std(_row_stats(_haar_frame(c, p, rng), s2)['n']) for _ in range(60)])
+    z, _ = _zscore(emp_std, null)
+    assert abs(z) < 5.0  # a real Haar frame is consistent with the Haar null
+
+
 def test_robust_capacity_fit_clean_powerlaw_tight_errorbar():
     k = np.arange(1, 1001, dtype=np.float64)
     eig = k ** (-1.2)
