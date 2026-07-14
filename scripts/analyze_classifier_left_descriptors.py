@@ -3,24 +3,21 @@
 
 Leverage n_i = sum_j l_ij^2 is only the *total* left-mass of class i; it degenerates to 1
 once D >= C (L becomes a full orthonormal basis, rows unit-norm). The width-robust object
-is the *shape* of each class's mode distribution p_ij = l_ij^2 / n_i (a probability over
-singular modes j, well-defined at any width). Its moments describe WHERE in the spectrum a
-class's classifier lives:
+is the class's mode distribution p_ij = l_ij^2 / n_i (a probability over singular modes j,
+well-defined at any width). Two independent things summarize it:
 
-  d1_i = sum_j l_ij^2 s_j^2 / mean(s^2)         (user d^(1); = E_i/mean(s^2))
-  d2_i = sum_j l_ij^2 j    / mean(j)            (user d^(2))
-  d1n_i = <s^2>_i / mean(s^2)  = d1_i / n_i     (shape only: mean sing.-value^2 the class sees)
-  d2n_i = <j>_i   / mean(j)    = d2_i / n_i     (shape only: mean mode index)
+  * LOCATION  rho_i = <j>_i = sum_j j p_ij            (mean mode rank; norm rho_i/p in (0,1])
+              -> where in the spectrum class i's weight sits (top modes vs weak tail).
+  * SPREAD    perplexity_i = exp(H_i), H_i = -sum_j p_ij log p_ij   (effective #modes)
+              -> how many modes it spreads over. (This tracks the participation ratio.)
 
-and a natural [0,1] quantity that stays meaningful at large width:
+Location and spread are independent: a distribution can slide its mean while keeping the
+same width, so a constant participation ratio (spread) is compatible with a varying
+centroid (location). We also keep the user's moments d1=E_i/mean(s^2), d2=<j>/mean(j) and
+the s^2-weighted concentration d1n=<s^2>_i/mean(s^2).
 
-  kappa_i = sum_j q_ij (j-1)/(p-1) in [0,1],   q_ij = s_j^2 l_ij^2 / E_i   (energy centroid:
-            0 = all energy on the top singular mode, 1 = on the weakest)
-  gtop_i  = <s^2>_i / s_1^2 in [0,1]            (spectral concentration: 1 = fully top mode)
-
-We compute these per run, correlate each with class accuracy, and (across a results root)
-show correlation-with-accuracy vs width -- leverage collapses at D>=C while the spectral
-descriptors persist.
+Each descriptor is correlated with BOTH per-class accuracy and per-class cross-entropy
+('entropy'), across the grid, and correlation-vs-width is plotted.
 """
 from __future__ import annotations
 
@@ -45,26 +42,25 @@ def compute_descriptors(what_hat: np.ndarray) -> dict:
     l2 = left ** 2
     s2 = s ** 2
     j = np.arange(1, p + 1, dtype=np.float64)
-    n = l2.sum(axis=1)                      # leverage
-    energy = l2 @ s2                        # E_i
+    n = l2.sum(axis=1)                          # leverage (total left-mass)
+    energy = l2 @ s2                            # E_i
     sbar2 = float(s2.mean())
-    jbar = float(j.mean())
     with np.errstate(divide='ignore', invalid='ignore'):
-        d1 = energy / sbar2
-        d2 = (l2 @ j) / jbar
-        d1n = np.where(n > 0, energy / (n * sbar2), np.nan)      # <s^2>/mean(s^2)
-        d2n = np.where(n > 0, (l2 @ j) / (n * jbar), np.nan)     # <j>/mean(j)
-        # energy-weighted normalized spectral centroid in [0,1]
-        kappa = np.where(energy > 0, (l2 * s2) @ ((j - 1) / (p - 1)) / energy, np.nan)
-        gtop = np.where(n > 0, (energy / n) / float(s2.max()), np.nan)  # <s^2>/s1^2 in [0,1]
-        # mass-weighted centroid too (uses p_ij, no s-weighting)
-        mass_centroid = np.where(n > 0, l2 @ ((j - 1) / (p - 1)) / n, np.nan)
-    return {'C': c, 'p': p, 'leverage': n, 'energy': energy,
-            'd1': d1, 'd2': d2, 'd1n': d1n, 'd2n': d2n,
-            'kappa': kappa, 'gtop': gtop, 'mass_centroid': mass_centroid}
+        pij = l2 / n[:, None]                   # per-class mode distribution (sums to 1)
+        mean_rank = pij @ j                     # rho_i = <j>_i  (LOCATION)
+        norm_mean_rank = mean_rank / p          # in (0,1]
+        ent = -np.sum(np.where(pij > 0, pij * np.log(pij), 0.0), axis=1)  # H_i (SPREAD)
+        perplexity = np.exp(ent)               # effective # modes
+        perplexity_frac = perplexity / p       # effective fraction of modes
+        d1n = np.where(n > 0, energy / (n * sbar2), np.nan)   # <s^2>_i/mean(s^2) (s^2-weighted)
+    return {'C': c, 'p': p, 'leverage': n, 'energy': energy, 'mean_rank': mean_rank,
+            'norm_mean_rank': norm_mean_rank, 'mode_entropy': ent,
+            'perplexity_frac': perplexity_frac, 'd1n': d1n}
 
 
-_DESCRIPTORS = ['leverage', 'd1n', 'd2n', 'kappa', 'gtop', 'mass_centroid']
+# Featured descriptors (LOCATION rho, SPREAD perplexity, s^2-weighted contrast, leverage).
+_DESCRIPTORS = ['leverage', 'norm_mean_rank', 'perplexity_frac', 'd1n']
+_TARGETS = ['accuracy', 'cross_entropy']
 
 
 def _process_run(run_dir: str) -> dict | None:
@@ -75,43 +71,49 @@ def _process_run(run_dir: str) -> dict | None:
     if 'W_hat' not in data.files:
         return None
     desc = compute_descriptors(np.asarray(data['W_hat'], dtype=np.float64))
-    acc = np.asarray(data['acc_full'], dtype=np.float64) if 'acc_full' in data.files else None
+    targets = {}
+    if 'acc_full' in data.files:
+        targets['accuracy'] = np.asarray(data['acc_full'], dtype=np.float64)
+    if 'ce_full' in data.files:
+        targets['cross_entropy'] = np.asarray(data['ce_full'], dtype=np.float64)
     summary = json.load(open(os.path.join(run_dir, 'fit_summary.json'))) \
         if os.path.exists(os.path.join(run_dir, 'fit_summary.json')) else {}
     dataset = str(summary.get('dataset', 'na'))
     optimizer = str(summary.get('optimizer_key', 'na'))
     width = int(summary.get('width', 0))
 
-    corr = {}
-    if acc is not None:
-        for key in _DESCRIPTORS:
-            r, rho = _pearson_spearman(desc[key], acc)
-            corr[key] = {'pearson': r, 'spearman': rho}
+    corr = {t: {} for t in _TARGETS}
+    for t, y in targets.items():
+        for key in _DESCRIPTORS + ['mean_rank', 'mode_entropy']:
+            r, rho = _pearson_spearman(desc[key], y)
+            corr[t][key] = {'pearson': r, 'spearman': rho}
 
-    # Per-run descriptor CSV under svd/left.
     out_dir = os.path.join(run_dir, 'svd', 'left')
     os.makedirs(out_dir, exist_ok=True)
+    cols = ['leverage', 'mean_rank', 'norm_mean_rank', 'mode_entropy', 'perplexity_frac', 'd1n', 'energy']
     with open(os.path.join(out_dir, 'left_descriptors.csv'), 'w', newline='', encoding='utf-8') as h:
-        fields = ['class_index'] + _DESCRIPTORS + ['energy', 'accuracy']
-        w = csv.DictWriter(h, fieldnames=fields)
+        w = csv.DictWriter(h, fieldnames=['class_index'] + cols + list(targets))
         w.writeheader()
         for i in range(desc['C']):
-            row = {'class_index': i, 'energy': float(desc['energy'][i]),
-                   'accuracy': float(acc[i]) if acc is not None else float('nan')}
-            for key in _DESCRIPTORS:
-                row[key] = float(desc[key][i])
+            row = {'class_index': i}
+            for k in cols:
+                row[k] = float(desc[k][i])
+            for t, y in targets.items():
+                row[t] = float(y[i])
             w.writerow(row)
 
-    return {'dataset': dataset, 'optimizer': optimizer, 'width': width,
-            'C': desc['C'], 'p': desc['p'], 'corr': corr,
-            'kappa': desc['kappa'], 'accuracy': acc, 'run_dir': run_dir}
+    return {'dataset': dataset, 'optimizer': optimizer, 'width': width, 'C': desc['C'],
+            'p': desc['p'], 'corr': corr,
+            'spread_cv': float(np.nanstd(desc['perplexity_frac']) / np.nanmean(desc['perplexity_frac'])),
+            'loc_cv': float(np.nanstd(desc['norm_mean_rank']) / np.nanmean(desc['norm_mean_rank']))}
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--results-root', default='artifacts/classifier_powerlaw')
-    parser.add_argument('--datasets', nargs='*', default=['imagenet'],
-                        help='Datasets to aggregate for the cross-width figure (cifar C=10 is noisy).')
+    parser.add_argument('--datasets', nargs='*', default=['imagenet'])
+    parser.add_argument('--target', choices=_TARGETS, default='cross_entropy',
+                        help='Difficulty variable for the cross-width correlation figure.')
     parser.add_argument('--output-dir', default='artifacts/classifier_powerlaw/comparison')
     parser.add_argument('--format', choices=['pdf', 'png'], default='png')
     return parser.parse_args()
@@ -119,62 +121,61 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
-    runs = []
-    for npz in sorted(glob.glob(os.path.join(args.results_root, '**', 'powerlaw_arrays.npz'),
-                                recursive=True)):
-        res = _process_run(os.path.dirname(npz))
-        if res is not None:
-            runs.append(res)
+    runs = [r for r in (_process_run(os.path.dirname(n)) for n in
+                        sorted(glob.glob(os.path.join(args.results_root, '**', 'powerlaw_arrays.npz'),
+                                         recursive=True))) if r is not None]
     if not runs:
         raise SystemExit(f'No runs under {args.results_root}')
-
-    # Cross-width figure: corr(descriptor, accuracy) vs width, per dataset/optimizer.
     os.makedirs(os.path.abspath(args.output_dir), exist_ok=True)
+
     series = {}
     for r in runs:
-        if r['dataset'] not in args.datasets or not r['corr']:
-            continue
-        series.setdefault((r['dataset'], r['optimizer']), []).append(r)
+        if r['dataset'] in args.datasets:
+            series.setdefault((r['dataset'], r['optimizer']), []).append(r)
     for key in series:
         series[key].sort(key=lambda r: r['width'])
 
-    fig, axes = plt.subplots(1, len(_DESCRIPTORS), figsize=(3.4 * len(_DESCRIPTORS), 4.2),
-                             squeeze=False)
+    keys = ['leverage', 'norm_mean_rank', 'perplexity_frac', 'd1n']
+    titles = {'leverage': 'leverage $n_i$ (total mass)',
+              'norm_mean_rank': r'location $\langle j\rangle_i/p$',
+              'perplexity_frac': 'spread (perplexity/$p$)',
+              'd1n': r'$s^2$-weighted $\langle s^2\rangle_i/\overline{s^2}$'}
+    fig, axes = plt.subplots(1, len(keys), figsize=(3.6 * len(keys), 4.2), squeeze=False)
     colors = plt.cm.tab10(np.linspace(0, 1, max(1, len(series))))
     for ci, (skey, rlist) in enumerate(sorted(series.items())):
         widths = [r['width'] for r in rlist]
-        label = f'{skey[0]}/{skey[1]}'
-        for a, key in enumerate(_DESCRIPTORS):
-            ax = axes[0][a]
-            ys = [r['corr'].get(key, {}).get('pearson', np.nan) for r in rlist]
-            ax.plot(widths, ys, marker='o', color=colors[ci], label=label)
-    for a, key in enumerate(_DESCRIPTORS):
+        for a, key in enumerate(keys):
+            ys = [r['corr'][args.target].get(key, {}).get('pearson', np.nan) for r in rlist]
+            axes[0][a].plot(widths, ys, marker='o', color=colors[ci], label=f'{skey[0]}/{skey[1]}')
+    for a, key in enumerate(keys):
         ax = axes[0][a]
         ax.axhline(0, color='k', lw=0.6)
         ax.set_xscale('log', base=2)
-        ax.set_xlabel('width')
-        ax.set_ylabel('Pearson corr with accuracy')
-        ax.set_title(key)
-        ax.grid(True, which='both', alpha=0.25)
-        ax.set_ylim(-0.75, 0.75)
-    axes[0][0].legend(fontsize=7)
-    fig.suptitle('Per-class descriptor vs accuracy: correlation across width '
-                 '(leverage collapses at D>=C; spectral descriptors persist)', fontsize=12)
+        ax.set_xlabel('width'); ax.set_ylabel(f'corr with {args.target}')
+        ax.set_title(titles[key]); ax.grid(True, which='both', alpha=0.25); ax.set_ylim(-0.75, 0.75)
+    axes[0][0].legend(fontsize=8)
+    fig.suptitle(f'Per-class left descriptors: correlation with {args.target} across width', fontsize=12)
     fig.tight_layout(rect=(0, 0, 1, 0.94))
-    path = os.path.join(os.path.abspath(args.output_dir), f'compare_left_descriptors_vs_width.{args.format}')
+    path = os.path.join(os.path.abspath(args.output_dir),
+                        f'compare_left_descriptors_vs_{args.target}.{args.format}')
     fig.savefig(path, bbox_inches='tight', dpi=200)
     plt.close(fig)
 
-    # Table to stdout + json.
-    print(f'{"run":22s} {"C":>5s} {"p":>5s} | ' + ' '.join(f'{k:>7s}' for k in _DESCRIPTORS))
+    print(f'target = {args.target}')
+    print(f'{"run":22s} {"C":>5s} {"p":>5s} | {"lev":>6s} {"loc":>6s} {"spread":>6s} {"d1n":>6s} '
+          f'| {"locCV":>6s} {"sprdCV":>6s}')
     table = []
     for r in sorted(runs, key=lambda r: (r['dataset'], r['optimizer'], r['width'])):
-        row = {'run': f'{r["dataset"]}/{r["optimizer"]}_w{r["width"]}', 'C': r['C'], 'p': r['p'],
-               'corr': {k: r['corr'].get(k, {}).get('pearson', float('nan')) for k in _DESCRIPTORS}}
-        table.append(row)
+        cr = r['corr'][args.target]
+        rowname = f'{r["dataset"]}/{r["optimizer"]}_w{r["width"]}'
+        table.append({'run': rowname, 'C': r['C'], 'p': r['p'],
+                      'corr': {t: r['corr'][t] for t in _TARGETS},
+                      'loc_cv': r['loc_cv'], 'spread_cv': r['spread_cv']})
         if r['dataset'] in args.datasets:
-            print(f'{row["run"]:22s} {r["C"]:5d} {r["p"]:5d} | '
-                  + ' '.join(f'{row["corr"][k]:7.2f}' for k in _DESCRIPTORS))
+            g = lambda k: cr.get(k, {}).get('pearson', float('nan'))  # noqa: E731
+            print(f'{rowname:22s} {r["C"]:5d} {r["p"]:5d} | {g("leverage"):6.2f} '
+                  f'{g("norm_mean_rank"):6.2f} {g("perplexity_frac"):6.2f} {g("d1n"):6.2f} '
+                  f'| {r["loc_cv"]:6.3f} {r["spread_cv"]:6.3f}')
     with open(os.path.join(os.path.abspath(args.output_dir), 'left_descriptors_corr.json'), 'w',
               encoding='utf-8') as h:
         json.dump(table, h, indent=2)

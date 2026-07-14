@@ -190,7 +190,7 @@ def test_left_descriptors_bounded_and_width_robust():
     rng = np.random.default_rng(0)
     for c, d in [(100, 40), (60, 200)]:  # under-complete (D<C) and complete (D>=C)
         desc = compute_descriptors(rng.normal(size=(c, d)))
-        for key in ('kappa', 'gtop', 'mass_centroid'):
+        for key in ('norm_mean_rank', 'perplexity_frac'):
             v = desc[key][np.isfinite(desc[key])]
             assert np.all(v >= -1e-9) and np.all(v <= 1 + 1e-9), f'{key} out of [0,1]'
         # When D>=C the rows are unit-norm -> leverage degenerates to 1.
