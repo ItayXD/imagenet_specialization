@@ -9,7 +9,9 @@ from scripts.analyze_classifier_powerlaw import (
     loglog_binned_slope,
     per_class_accuracy_and_ce,
     residual_tail_mass,
+    robust_loglog_slope,
     row_center_classifier,
+    select_bulk_window,
     truncated_logits,
 )
 
@@ -28,8 +30,8 @@ def test_loglog_binned_slope_recovers_known_exponent():
 def test_fit_capacity_exponent_recovers_b():
     b_true = 1.2
     eigenvalues = np.arange(1, 401, dtype=np.float64) ** (-b_true)
-    fit = fit_capacity_exponent(eigenvalues, num_bins=20)
-    assert abs(fit['b'] - b_true) < 0.02
+    fit = fit_capacity_exponent(eigenvalues, num_bins=20, k_lo=1, k_hi=400)
+    assert abs(fit['b'] - b_true) < 0.03
 
 
 def test_fit_source_exponents_recovers_per_class_a():
@@ -40,9 +42,48 @@ def test_fit_source_exponents_recovers_per_class_a():
     what_squared = np.stack([
         np.exp(log_a2_true[i]) * positions ** (-2.0 * a_true[i]) for i in range(len(a_true))
     ], axis=0)
-    fit = fit_source_exponents(what_squared, num_bins=24)
-    assert np.allclose(fit['a'], a_true, atol=0.02)
-    assert np.allclose(fit['log_A2'], log_a2_true, atol=0.05)
+    fit = fit_source_exponents(what_squared, num_bins=24, k_lo=1, k_hi=num_features)
+    assert np.allclose(fit['a'], a_true, atol=0.03)
+    assert np.allclose(fit['log_A2'], log_a2_true, atol=0.08)
+
+
+def _three_regime_spectrum(n=400):
+    """Flat head (k<=7), k^-1 bulk (8..300), steep k^-5 finite-dimension tail (>300)."""
+    k = np.arange(1, n + 1, dtype=np.float64)
+    lam = np.empty(n)
+    head = k <= 7
+    tail = k > 300
+    bulk = ~head & ~tail
+    lam[head] = 1.0
+    lam[bulk] = 8.0 / k[bulk]
+    lam[tail] = (8.0 / 300.0) * (300.0 / k[tail]) ** 5
+    return lam
+
+
+def test_select_bulk_window_excludes_head_and_tail():
+    lam = _three_regime_spectrum(400)
+    k_lo, k_hi, info = select_bulk_window(lam, slope_tol=0.5)
+    # Head (flat, slope 0) and the steep tail (slope -5) must be excluded.
+    assert k_lo >= 5
+    assert k_hi <= 320
+    assert k_hi - k_lo > 100  # a substantial bulk remains
+    # The bulk slope is ~ -1, so the capacity fit over the detected window recovers b~1.
+    fit = fit_capacity_exponent(lam, num_bins=16, k_lo=k_lo, k_hi=k_hi)
+    assert abs(fit['b'] - 1.0) < 0.15
+
+
+def test_bulk_restriction_makes_source_exponent_positive():
+    # k^-2 bulk (a=1) with a RISING noise-floor tail beyond k=200; a full-range fit is
+    # biased toward zero/negative, but restricting to the bulk recovers the true slope.
+    n = 512
+    k = np.arange(1, n + 1, dtype=np.float64)
+    what_sq = k ** (-2.0)
+    tail = k > 200
+    what_sq[tail] = (200.0 ** -2.0) * (k[tail] / 200.0) ** 1.0  # rising tail
+    full = robust_loglog_slope(k, what_sq, num_bins=24, k_lo=1, k_hi=n)
+    bulk = robust_loglog_slope(k, what_sq, num_bins=24, k_lo=5, k_hi=180)
+    assert -0.5 * bulk['slope'] > 0.8  # a_i ~ 1, clearly positive
+    assert -0.5 * full['slope'] < -0.5 * bulk['slope']  # full-range fit is biased upward
 
 
 def test_row_center_classifier_zeroes_class_mean_and_preserves_softmax():

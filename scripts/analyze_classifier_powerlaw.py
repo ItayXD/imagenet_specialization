@@ -147,10 +147,158 @@ def loglog_binned_slope(
     }
 
 
-def fit_source_exponents(what_squared: np.ndarray, num_bins: int) -> dict[str, np.ndarray]:
+def _local_loglog_slopes(log_k: np.ndarray, log_v: np.ndarray, window: int) -> np.ndarray:
+    """Sliding-window local log-log slope at every index (NaN where undefined)."""
+    n = log_k.size
+    half = max(2, window // 2)
+    slopes = np.full(n, np.nan, dtype=np.float64)
+    for i in range(n):
+        lo = max(0, i - half)
+        hi = min(n, i + half + 1)
+        xs = log_k[lo:hi]
+        ys = log_v[lo:hi]
+        good = np.isfinite(ys)
+        if int(good.sum()) >= 3 and np.ptp(xs[good]) > 0:
+            slopes[i] = np.polyfit(xs[good], ys[good], deg=1)[0]
+    return slopes
+
+
+def select_bulk_window(
+    values: np.ndarray,
+    *,
+    local_window: int | None = None,
+    slope_tol: float = 0.5,
+    min_window: int = 8,
+) -> tuple[int, int, dict[str, Any]]:
+    """Locate the asymptotic power-law (bulk) regime of a spectrum, 1-indexed [k_lo, k_hi].
+
+    A spectrum like lambda_k typically has three regimes: an early/head law (small k),
+    the asymptotic bulk power law, and a finite-dimension drop where the last PCs fall
+    off a cliff. This estimates a bulk slope from the central region, then expands a
+    contiguous window outward from the center while the sliding local slope stays within
+    ``slope_tol`` of that bulk slope, so the head and the finite-dimension tail (both of
+    which have markedly different local slopes) are excluded.
+    """
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    n = values.size
+    log_k = np.log(np.arange(1, n + 1, dtype=np.float64))
+    log_v = np.where(values > 0, np.log(np.where(values > 0, values, 1.0)), np.nan)
+    if local_window is None:
+        local_window = max(5, n // 15)
+
+    slopes = _local_loglog_slopes(log_k, log_v, local_window)
+    finite_idx = np.where(np.isfinite(slopes))[0]
+    if finite_idx.size < max(min_window, 4):
+        return 1, n, {'b_bulk': float('nan'), 'local_slopes': slopes, 'fallback': True}
+
+    # Bulk slope from the central 20-60% of the (finite) index range.
+    lo_c = finite_idx[int(0.20 * (finite_idx.size - 1))]
+    hi_c = finite_idx[int(0.60 * (finite_idx.size - 1))]
+    central = slopes[lo_c:hi_c + 1]
+    central = central[np.isfinite(central)]
+    b_bulk = float(np.median(central)) if central.size else float(np.nanmedian(slopes))
+    center = (lo_c + hi_c) // 2
+
+    left = center
+    while left - 1 >= 0 and np.isfinite(slopes[left - 1]) and abs(slopes[left - 1] - b_bulk) <= slope_tol:
+        left -= 1
+    right = center
+    while right + 1 < n and np.isfinite(slopes[right + 1]) and abs(slopes[right + 1] - b_bulk) <= slope_tol:
+        right += 1
+
+    k_lo, k_hi = left + 1, right + 1  # 1-indexed
+    if k_hi - k_lo + 1 < min_window:
+        # Widen symmetrically around the center to guarantee a usable window.
+        pad = (min_window - (k_hi - k_lo + 1) + 1) // 2
+        k_lo = max(1, k_lo - pad)
+        k_hi = min(n, k_hi + pad)
+    return int(k_lo), int(k_hi), {'b_bulk': b_bulk, 'local_slopes': slopes, 'fallback': False}
+
+
+def _robust_line(x: np.ndarray, y: np.ndarray) -> tuple[float, float]:
+    """Robust slope/intercept via Theil-Sen (median of pairwise slopes); OLS fallback."""
+    if x.size < 2:
+        return float('nan'), float('nan')
+    try:
+        from scipy.stats import theilslopes
+
+        slope, intercept, _, _ = theilslopes(y, x)
+        return float(slope), float(intercept)
+    except Exception:
+        slope, intercept = np.polyfit(x, y, deg=1)
+        return float(slope), float(intercept)
+
+
+def robust_loglog_slope(
+    positions: np.ndarray,
+    values: np.ndarray,
+    num_bins: int,
+    *,
+    k_lo: int,
+    k_hi: int,
+) -> dict[str, Any]:
+    """Robust log-log slope over the window [k_lo, k_hi].
+
+    Two robustness layers stacked on top of restricting to the bulk window: within each
+    log-spaced bin the *median* of the values is used (robust to per-bin outliers), and
+    the slope across bins is fit with Theil-Sen (robust to a bad bin). Returns slope,
+    intercept, log-RMSE, and the bin centers/values used.
+    """
+    positions = np.asarray(positions, dtype=np.float64).reshape(-1)
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    sel = (positions >= k_lo) & (positions <= k_hi) & np.isfinite(values) & (values > 0)
+    x = positions[sel]
+    y = values[sel]
+    nan_result = {
+        'slope': float('nan'), 'intercept': float('nan'), 'log_rmse': float('nan'),
+        'bin_centers': np.zeros(0), 'bin_values': np.zeros(0), 'num_points': 0,
+    }
+    if x.size < 3:
+        return nan_result
+
+    edges = np.logspace(np.log10(float(k_lo)), np.log10(float(k_hi)), int(num_bins) + 1)
+    edges[-1] = np.nextafter(edges[-1], np.inf)
+    bin_index = np.digitize(x, edges) - 1
+    centers: list[float] = []
+    reps: list[float] = []
+    for b in range(int(num_bins)):
+        mask = bin_index == b
+        if not np.any(mask):
+            continue
+        centers.append(float(np.exp(np.mean(np.log(x[mask])))))
+        reps.append(float(np.median(y[mask])))  # robust within-bin representative
+    centers_arr = np.asarray(centers, dtype=np.float64)
+    reps_arr = np.asarray(reps, dtype=np.float64)
+    good = reps_arr > 0
+    if int(good.sum()) < 2:
+        return nan_result
+
+    log_c = np.log(centers_arr[good])
+    log_r = np.log(reps_arr[good])
+    slope, intercept = _robust_line(log_c, log_r)
+    residuals = log_r - (slope * log_c + intercept)
+    return {
+        'slope': slope,
+        'intercept': intercept,
+        'log_rmse': float(np.sqrt(np.mean(residuals ** 2))),
+        'bin_centers': centers_arr[good],
+        'bin_values': reps_arr[good],
+        'num_points': int(good.sum()),
+    }
+
+
+def fit_source_exponents(
+    what_squared: np.ndarray,
+    num_bins: int,
+    *,
+    k_lo: int,
+    k_hi: int,
+) -> dict[str, np.ndarray]:
     """Fit per-class source exponents a_i from What_ik^2 ~ A_i^2 k^{-2 a_i}.
 
-    what_squared has shape (C, D). Returns arrays a (C,), log_A2 (C,), log_rmse (C,).
+    The fit is restricted to the bulk window [k_lo, k_hi] (excluding the head and the
+    finite-dimension tail) and uses the robust log-log estimator. what_squared is (C, D).
+    Returns arrays a (C,), log_A2 (C,), log_rmse (C,).
     """
     what_squared = np.asarray(what_squared, dtype=np.float64)
     num_classes, num_features = what_squared.shape
@@ -159,24 +307,30 @@ def fit_source_exponents(what_squared: np.ndarray, num_bins: int) -> dict[str, n
     log_a2 = np.full(num_classes, np.nan, dtype=np.float64)
     log_rmse = np.full(num_classes, np.nan, dtype=np.float64)
     for i in range(num_classes):
-        fit = loglog_binned_slope(positions, what_squared[i], num_bins)
+        fit = robust_loglog_slope(positions, what_squared[i], num_bins, k_lo=k_lo, k_hi=k_hi)
         a[i] = -0.5 * fit['slope']  # slope = -2 a_i
         log_a2[i] = fit['intercept']
         log_rmse[i] = fit['log_rmse']
     return {'a': a, 'log_A2': log_a2, 'log_rmse': log_rmse}
 
 
-def fit_capacity_exponent(eigenvalues: np.ndarray, num_bins: int) -> dict[str, Any]:
-    """Fit the capacity exponent b from lambda_k ~ k^{-b}."""
+def fit_capacity_exponent(
+    eigenvalues: np.ndarray,
+    num_bins: int,
+    *,
+    k_lo: int,
+    k_hi: int,
+) -> dict[str, Any]:
+    """Fit the capacity exponent b from lambda_k ~ k^{-b} over the bulk window."""
     eigenvalues = np.asarray(eigenvalues, dtype=np.float64)
     positions = np.arange(1, eigenvalues.size + 1, dtype=np.float64)
-    fit = loglog_binned_slope(positions, eigenvalues, num_bins)
+    fit = robust_loglog_slope(positions, eigenvalues, num_bins, k_lo=k_lo, k_hi=k_hi)
     return {
         'b': -float(fit['slope']),  # slope = -b
         'intercept': float(fit['intercept']),
         'log_rmse': float(fit['log_rmse']),
         'bin_centers': fit['bin_centers'],
-        'bin_means': fit['bin_means'],
+        'bin_values': fit['bin_values'],
     }
 
 
@@ -306,7 +460,17 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
     num_features = eigenvalues.size
     positions = np.arange(1, num_features + 1, dtype=np.float64)
     run_label = str(arrays.get('run_label', 'classifier_powerlaw'))
+    k_lo = int(arrays['bulk_k_lo']) if 'bulk_k_lo' in arrays else 1
+    k_hi = int(arrays['bulk_k_hi']) if 'bulk_k_hi' in arrays else num_features
+    bulk_k = np.arange(k_lo, k_hi + 1, dtype=np.float64)  # fit-line domain (bulk only)
     written: list[str] = []
+
+    def _mark_bulk(ax) -> None:
+        # Shade the excluded head and finite-dimension tail so the fit region is explicit.
+        if k_lo > 1:
+            ax.axvspan(0.9, k_lo, color='0.85', alpha=0.5, zorder=0)
+        if k_hi < num_features:
+            ax.axvspan(k_hi, num_features * 1.05, color='0.85', alpha=0.5, zorder=0)
 
     def _save(fig, stem: str) -> None:
         path = os.path.join(output_dir, f'{stem}.{fmt}')
@@ -314,14 +478,15 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
         plt.close(fig)
         written.append(path)
 
-    # 1. Feature eigenvalue spectrum + fitted capacity line.
+    # 1. Feature eigenvalue spectrum + fitted capacity line (bulk regime only).
     fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    _mark_bulk(ax)
     ax.loglog(positions, np.clip(eigenvalues, 1e-30, None), marker='.', linestyle='none',
               markersize=3, alpha=0.7, label=r'$\lambda_k$')
     if np.isfinite(capacity_b):
-        fit_line = np.exp(capacity_intercept) * positions ** (-capacity_b)
-        ax.loglog(positions, fit_line, color='crimson', linewidth=2.0,
-                  label=fr'fit $k^{{-b}}$, $b={capacity_b:.2f}$')
+        fit_line = np.exp(capacity_intercept) * bulk_k ** (-capacity_b)
+        ax.loglog(bulk_k, fit_line, color='crimson', linewidth=2.4,
+                  label=fr'bulk fit $k^{{-b}}$, $b={capacity_b:.2f}$ ($k\in[{k_lo},{k_hi}]$)')
     ax.set_xlabel('PC index $k$')
     ax.set_ylabel(r'eigenvalue $\lambda_k$')
     ax.set_title(f'Feature (data) spectrum — {run_label}')
@@ -329,9 +494,10 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
     ax.legend()
     _save(fig, 'fig1_feature_spectrum')
 
-    # 2. Example class source spectra with fitted power laws.
+    # 2. Example class source spectra with fitted power laws (bulk regime only).
     finite_a = np.where(np.isfinite(a))[0]
     fig, ax = plt.subplots(figsize=(6.4, 4.8))
+    _mark_bulk(ax)
     if finite_a.size:
         order = finite_a[np.argsort(a[finite_a])]
         examples = {
@@ -342,11 +508,11 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
         colors = plt.cm.viridis(np.linspace(0.15, 0.85, len(examples)))
         for (label, ci), color in zip(examples.items(), colors):
             ax.loglog(positions, np.clip(what_hat[ci] ** 2, 1e-30, None), marker='.',
-                      linestyle='none', markersize=3, alpha=0.5, color=color,
+                      linestyle='none', markersize=3, alpha=0.4, color=color,
                       label=f'class {ci} ({label}, $a={a[ci]:.2f}$)')
             if np.isfinite(a[ci]) and np.isfinite(log_a2[ci]):
-                fit_line = np.exp(log_a2[ci]) * positions ** (-2.0 * a[ci])
-                ax.loglog(positions, fit_line, color=color, linewidth=1.8)
+                fit_line = np.exp(log_a2[ci]) * bulk_k ** (-2.0 * a[ci])
+                ax.loglog(bulk_k, fit_line, color=color, linewidth=2.2)
     ax.set_xlabel('PC index $k$')
     ax.set_ylabel(r'$\widehat{W}_{ik}^2$')
     ax.set_title(f'Example class source spectra — {run_label}')
@@ -442,6 +608,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--eval-batch-size', type=int, default=250)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--num-bins', type=int, default=24, help='Log-spaced bins over k for fits.')
+    parser.add_argument('--bulk-slope-tol', type=float, default=0.5,
+                        help='Local-slope tolerance (in slope units) for bulk-window detection.')
     parser.add_argument('--compute-dtype', choices=['float32', 'bfloat16'], default='float32',
                         help='Forward-pass precision. float32 (default) evaluates the trained '
                              'weights with ~1e-5 reconstruction error and a clean covariance tail; '
@@ -691,11 +859,21 @@ def main() -> None:
     what_eff = weight_eff @ eigenvectors  # (C, D) — for exact truncation logits
     what_gauge_sq = what_gauge ** 2
 
-    # Fits.
-    capacity = fit_capacity_exponent(eigenvalues, args.num_bins)
-    source = fit_source_exponents(what_gauge_sq, args.num_bins)
+    # Bulk window: the asymptotic power-law regime of the data spectrum, excluding the
+    # early/head law and the finite-dimension tail. The same window (a property of the
+    # data eigenbasis) is used for both the capacity and the per-class source fits.
+    k_lo, k_hi, window_info = select_bulk_window(eigenvalues, slope_tol=args.bulk_slope_tol)
+    print(f'bulk_window=[{k_lo}, {k_hi}] of {num_features} PCs '
+          f'(local bulk slope~{window_info["b_bulk"]:.3f})')
+
+    # Fits (restricted to the bulk window, robust estimator).
+    capacity = fit_capacity_exponent(eigenvalues, args.num_bins, k_lo=k_lo, k_hi=k_hi)
+    source = fit_source_exponents(what_gauge_sq, args.num_bins, k_lo=k_lo, k_hi=k_hi)
     a = source['a']
     print(f'capacity_exponent_b={capacity["b"]:.4f} (log_rmse={capacity["log_rmse"]:.3f})')
+    num_negative_a = int(np.sum(np.isfinite(a) & (a < 0)))
+    if num_negative_a:
+        print(f'WARNING: {num_negative_a} classes still have negative source exponent a_i.')
     finite_a = a[np.isfinite(a)]
     print(f'source_exponent a: mean={np.mean(finite_a):.4f} std={np.std(finite_a):.4f} '
           f'({finite_a.size}/{num_classes} classes fit)')
@@ -759,6 +937,8 @@ def main() -> None:
         'capacity_exponent_b': np.float64(capacity['b']),
         'capacity_intercept': np.float64(capacity['intercept']),
         'capacity_log_rmse': np.float64(capacity['log_rmse']),
+        'bulk_k_lo': np.int64(k_lo),
+        'bulk_k_hi': np.int64(k_hi),
         'acc_full': acc_full.astype(np.float64),
         'ce_full': ce_full.astype(np.float64),
         'acc_rank': acc_rank.astype(np.float64),
@@ -837,11 +1017,15 @@ def main() -> None:
         'num_bins': int(args.num_bins),
         'muP_divisor': divisor,
         'classifier_recon_max_abs_diff': recon_max_diff,
+        'bulk_k_lo': int(k_lo),
+        'bulk_k_hi': int(k_hi),
+        'bulk_local_slope': float(window_info['b_bulk']),
         'capacity_exponent_b': float(capacity['b']),
         'capacity_log_rmse': float(capacity['log_rmse']),
         'source_exponent_mean': float(np.mean(finite_a)) if finite_a.size else float('nan'),
         'source_exponent_std': float(np.std(finite_a)) if finite_a.size else float('nan'),
         'source_classes_fit': int(finite_a.size),
+        'source_negative_count': num_negative_a,
         'overall_val_accuracy': overall_acc_full,
         'overall_val_cross_entropy': overall_ce_full,
         'accuracy_at_full_m': float(acc_by_m[-1]),
