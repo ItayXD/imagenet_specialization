@@ -182,6 +182,19 @@ def test_per_class_accuracy_and_ce_toy():
     assert np.isnan(acc3[2]) and np.isnan(ce3[2])
 
 
+def test_compute_svd_source_matches_svd():
+    from scripts.analyze_classifier_svd import compute_svd_source
+
+    rng = np.random.default_rng(0)
+    what = rng.normal(size=(50, 120))
+    result = compute_svd_source(what, num_bins=12, k_lo=5, k_hi=100)
+    s_ref = np.linalg.svd(what, compute_uv=False)
+    assert np.allclose(result['singular_values'], s_ref, atol=1e-8)
+    assert np.all(np.diff(result['singular_values']) <= 1e-9)  # descending
+    assert result['a_j'].shape[0] == min(what.shape)
+    assert np.isfinite(result['sj_exponent_c'])
+
+
 def test_default_trunc_list_includes_full_rank_and_is_sorted():
     values = default_trunc_list(512)
     assert values == sorted(values)
