@@ -61,13 +61,16 @@ def _load(results_root: str) -> dict:
         series.setdefault(key, []).append({
             'width': int(m['width']),
             'p': d.get('longitudinal_exponent_p', np.nan),
+            'p_se': d.get('longitudinal_p_se', np.nan),
             'p_r2': d.get('longitudinal_r2', np.nan),
             'q': d.get('transverse_length_exponent_q', np.nan),
             'shape': d.get('transverse_shape_verdict', ''),
             'ell_low': d.get('ell_low_exponent', np.nan),
+            'ell_low_se': d.get('ell_low_se', np.nan),
             'ell_break': d.get('ell_breakpoint', np.nan),
             'shape_cross': d.get('shape_crossover_i', np.nan),
             'sing_c': sing.get('c', np.nan),
+            'sing_c_se': sing.get('c_se', np.nan),
             'sing_r2': sing.get('r2', np.nan),
             'i_cross': haar.get('i_cross', np.nan),
             'D': d.get('num_features', np.nan),
@@ -87,37 +90,48 @@ def main() -> None:
         raise SystemExit(f'No diagonal_band_summary.json found under {args.results_root}')
     print('series:', {f'{a}/{b}': [r['width'] for r in v] for (a, b), v in series.items()})
 
+    # (field, se_field or None, title, hline or None, logy). Error bars where a slope SE
+    # exists, so real trends are distinguishable from fit noise.
     panels = [
-        ('p', r'longitudinal exponent $p$  ($A(i)\sim i^{-p}$)'),
-        ('ell_low', r'transverse low-$i$ exponent  ($\ell\sim i^{q_\mathrm{low}}$)'),
-        ('ell_break', r'$\ell(i)$ breakpoint $i$'),
-        ('sing_c', r'singular-value exponent $c$  ($s_j\sim j^{-c}$)'),
-        ('i_cross', r'structured-band size $i_\mathrm{cross}$ (# aligned modes)'),
-        ('diag_below', r'below-floor diagonal percentile (0.5 = Haar)'),
-        ('pr_ratio', r'below-floor PR / $(D/3)$  (1.0 = Haar)'),
+        ('sing_c', 'sing_c_se', r'singular-value exponent $c$  ($s_j\sim j^{-c}$)', None, False),
+        ('p', 'p_se', r'longitudinal exponent $p$  ($A(i)\sim i^{-p}$)', None, False),
+        ('ell_low', 'ell_low_se', r'transverse width exponent $q_\mathrm{low}$  ($w\sim i^{q}$, pre-break)', 0.5, False),
+        ('i_cross', None, r'structured-band size $i_\mathrm{cross}$ (# aligned modes)', None, True),
+        ('ell_break', None, r'width breakpoint $i$  (× = exp→Gaussian crossover)', None, False),
+        ('diag_below', None, r'below-floor diagonal percentile (0.5 = Haar)', 0.5, False),
+        ('pr_ratio', None, r'below-floor PR / $(D/3)$  (1.0 = Haar)', 1.0, False),
     ]
     fig, axes = plt.subplots(2, 4, figsize=(20.0, 9.0))
-    for (field, title), ax in zip(panels, axes.ravel()):
+    for (field, se_field, title, hline, logy), ax in zip(panels, axes.ravel()):
         for key, rows in series.items():
             widths = np.array([r['width'] for r in rows], dtype=float)
-            ys = np.array([float(r[field]) if r[field] is not None else np.nan
-                           for r in rows], dtype=float)
-            ax.plot(widths, ys, marker='o', color=_COLOR.get(key), label=f'{key[0]}/{key[1]}')
+            ys = np.array([float(r[field]) if r[field] is not None else np.nan for r in rows])
+            color = _COLOR.get(key)
+            if se_field is not None:
+                errs = np.array([float(r[se_field]) if r[se_field] is not None else np.nan
+                                 for r in rows])
+                ax.errorbar(widths, ys, yerr=errs, marker='o', color=color, capsize=3,
+                            elinewidth=1.2, label=f'{key[0]}/{key[1]}')
+            else:
+                ax.plot(widths, ys, marker='o', color=color, label=f'{key[0]}/{key[1]}')
+            if field == 'ell_break':  # overlay the exp->Gaussian shape crossover
+                sc = np.array([float(r['shape_cross']) if r['shape_cross'] is not None else np.nan
+                               for r in rows])
+                ax.plot(widths, sc, marker='x', ls=':', color=color, alpha=0.7)
         ax.set_xscale('log', base=2)
         ax.set_xlabel('width (num_filters)')
         ax.set_ylabel(title)
         ax.set_title(title)
         ax.grid(True, which='both', alpha=0.25)
-        if field == 'diag_below':
-            ax.axhline(0.5, color='0.5', ls='--', lw=1)
-        if field == 'pr_ratio':
-            ax.axhline(1.0, color='0.5', ls='--', lw=1)
-        if field == 'i_cross':
+        if hline is not None:
+            ax.axhline(hline, color='0.5', ls='--', lw=1)
+        if logy:
             ax.set_yscale('log')
     for ax in axes.ravel()[len(panels):]:
         ax.axis('off')
     axes.ravel()[0].legend(fontsize=9)
-    fig.suptitle('SVD diagonal-band structure vs width', fontsize=14)
+    fig.suptitle('SVD diagonal-band structure vs width  (error bars = slope std error; ImageNet)',
+                 fontsize=14)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     os.makedirs(os.path.abspath(args.output_dir), exist_ok=True)
     out = os.path.join(os.path.abspath(args.output_dir), f'compare_svd_diagonal.{args.format}')

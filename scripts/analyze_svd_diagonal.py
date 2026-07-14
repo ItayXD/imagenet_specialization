@@ -62,14 +62,19 @@ def _band_matrix(right_sq: np.ndarray, max_offset: int) -> tuple[np.ndarray, np.
 def _loglog_fit(x: np.ndarray, y: np.ndarray) -> dict:
     m = np.isfinite(x) & np.isfinite(y) & (x > 0) & (y > 0)
     if int(m.sum()) < 3:
-        return {'slope': float('nan'), 'intercept': float('nan'), 'r2': float('nan'), 'n': int(m.sum())}
+        return {'slope': float('nan'), 'intercept': float('nan'), 'r2': float('nan'),
+                'se': float('nan'), 'n': int(m.sum())}
     lx, ly = np.log(x[m]), np.log(y[m])
     slope, intercept = np.polyfit(lx, ly, 1)
     pred = slope * lx + intercept
     ss_res = float(np.sum((ly - pred) ** 2))
     ss_tot = float(np.sum((ly - ly.mean()) ** 2))
     r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
-    return {'slope': float(slope), 'intercept': float(intercept), 'r2': float(r2), 'n': int(m.sum())}
+    n = int(m.sum())
+    sxx = float(np.sum((lx - lx.mean()) ** 2))
+    se = float(np.sqrt((ss_res / (n - 2)) / sxx)) if n > 2 and sxx > 0 else float('nan')
+    return {'slope': float(slope), 'intercept': float(intercept), 'r2': float(r2),
+            'se': se, 'n': n}
 
 
 def _linear_r2(x: np.ndarray, y: np.ndarray) -> dict:
@@ -224,8 +229,18 @@ def _piecewise_powerlaw(x: np.ndarray, y: np.ndarray, *, min_seg: int = 8) -> tu
             best = (sse, xb, coef[0], coef[1], coef[1] + coef[2])
     sse, xb, a, b1, b2 = best
     r2 = 1.0 - sse / ss_tot if ss_tot > 0 else float('nan')
-    low = {'slope': float(b1), 'intercept': float(a), 'r2': float(r2)}
-    high = {'slope': float(b2), 'intercept': float(a + b1 * xb - b2 * xb), 'r2': float(r2)}
+    # Standard errors of the two slopes from the segmented design-matrix covariance.
+    hinge = np.maximum(0.0, lx - xb)
+    A = np.column_stack([np.ones_like(lx), lx, hinge])
+    dof = max(A.shape[0] - 3, 1)
+    try:
+        cov = (sse / dof) * np.linalg.inv(A.T @ A)
+        se_b1 = float(np.sqrt(max(cov[1, 1], 0.0)))
+        se_b2 = float(np.sqrt(max(cov[1, 1] + 2 * cov[1, 2] + cov[2, 2], 0.0)))
+    except np.linalg.LinAlgError:
+        se_b1 = se_b2 = float('nan')
+    low = {'slope': float(b1), 'intercept': float(a), 'r2': float(r2), 'se': se_b1}
+    high = {'slope': float(b2), 'intercept': float(a + b1 * xb - b2 * xb), 'r2': float(r2), 'se': se_b2}
     return float(np.exp(xb)), low, high
 
 
@@ -635,6 +650,7 @@ def robust_singular_powerlaw(s: np.ndarray, num_bins: int = 24) -> dict:
 
     j_hi = _cliff_onset(ly)
     bx, by = _log_binned_median(j[:j_hi], s[:j_hi], num_bins=min(num_bins, max(4, j_hi)))
+    c_se = float('nan')
     if bx.size >= 2:
         lbx, lby = np.log(bx), np.log(by)
         sl, ic = np.polyfit(lbx, lby, 1)
@@ -642,10 +658,12 @@ def robust_singular_powerlaw(s: np.ndarray, num_bins: int = 24) -> dict:
         ss_res = float(np.sum((lby - pred) ** 2))
         ss_tot = float(np.sum((lby - lby.mean()) ** 2))
         r2 = 1.0 - ss_res / ss_tot if ss_tot > 0 else float('nan')
+        sxx = float(np.sum((lbx - lbx.mean()) ** 2))
+        c_se = float(np.sqrt((ss_res / (lbx.size - 2)) / sxx)) if lbx.size > 2 and sxx > 0 else float('nan')
     else:  # too few bins (e.g. CIFAR): plain OLS on the kept modes
         sl, ic = np.polyfit(lx[:j_hi], ly[:j_hi], 1)
         r2 = float('nan')
-    return {'c': -float(sl), 'intercept': float(ic), 'r2': r2,
+    return {'c': -float(sl), 'intercept': float(ic), 'r2': r2, 'c_se': c_se,
             'j_lo': 1, 'j_hi': int(j_hi), 'n_excluded': int(p - j_hi),
             'method': 'log-binned OLS, sharp-tail trimmed (head kept)', 'j': j, 's': s}
 
@@ -700,7 +718,7 @@ def main() -> None:
     print(f'singular values s_j ~ j^-c   : c={sfit["c"]:.3f} (R^2={sfit["r2"]:.3f}, '
           f'j in [{sfit["j_lo"]},{sfit["j_hi"]}], excluded {sfit["n_excluded"]} cliff modes)')
     with open(os.path.join(svd_dir, 'singular_powerlaw.json'), 'w', encoding='utf-8') as h:
-        json.dump({k: sfit[k] for k in ('c', 'intercept', 'r2', 'j_lo', 'j_hi', 'n_excluded')}, h, indent=2)
+        json.dump({k: sfit[k] for k in ('c', 'c_se', 'intercept', 'r2', 'j_lo', 'j_hi', 'n_excluded')}, h, indent=2)
     sing_path = _render_singular(sfit, run_label, svd_dir, args.format)
     written.append(sing_path)
 
@@ -740,16 +758,19 @@ def main() -> None:
     summary = {
         'run_label': run_label, 'n': int(res['n']), 'num_features': int(res['num_features']),
         'median_floor': res['floor'], 'mean_floor_1_over_D': mean_floor_1_over_D,
-        'longitudinal_exponent_p': -lf['slope'], 'longitudinal_r2': lf['r2'],
-        'longitudinal_range': list(res['long_range']),
+        'longitudinal_exponent_p': -lf['slope'], 'longitudinal_p_se': lf.get('se', float('nan')),
+        'longitudinal_r2': lf['r2'], 'longitudinal_range': list(res['long_range']),
         'transverse_shape_verdict': res['shape_verdict'],
         'transverse_length_exponent_q': wf['slope'], 'transverse_length_r2': wf['r2'],
-        'ell_breakpoint': bp, 'ell_low_exponent': lo_fit['slope'], 'ell_low_r2': lo_fit['r2'],
-        'ell_high_exponent': hi_fit['slope'], 'ell_high_r2': hi_fit['r2'],
+        'ell_breakpoint': bp,
+        'ell_low_exponent': lo_fit['slope'], 'ell_low_se': lo_fit.get('se', float('nan')),
+        'ell_low_r2': lo_fit['r2'],
+        'ell_high_exponent': hi_fit['slope'], 'ell_high_se': hi_fit.get('se', float('nan')),
+        'ell_high_r2': hi_fit['r2'],
         'shape_crossover_i': res['shape_crossover'],
         'transverse_shapes': {int(c): sh for c, sh in res['shapes'].items()},
         'haar_below_floor': {k: (v if not isinstance(v, np.ndarray) else None) for k, v in haar.items()},
-        'singular_powerlaw': {k: sfit[k] for k in ('c', 'r2', 'j_lo', 'j_hi', 'n_excluded')},
+        'singular_powerlaw': {k: sfit[k] for k in ('c', 'c_se', 'r2', 'j_lo', 'j_hi', 'n_excluded')},
     }
 
     # Remove this script's earlier outputs that used to live directly under svd/ (now right/).
