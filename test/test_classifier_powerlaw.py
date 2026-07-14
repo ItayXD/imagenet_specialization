@@ -9,7 +9,9 @@ from scripts.analyze_classifier_powerlaw import (
     loglog_binned_slope,
     per_class_accuracy_and_ce,
     residual_tail_mass,
+    robust_capacity_fit,
     robust_loglog_slope,
+    robust_powerlaw_fit,
     row_center_classifier,
     select_bulk_window,
     truncated_logits,
@@ -180,6 +182,37 @@ def test_per_class_accuracy_and_ce_toy():
     # Missing class reports NaN.
     acc3, ce3 = per_class_accuracy_and_ce(logits, labels, num_classes=3)
     assert np.isnan(acc3[2]) and np.isnan(ce3[2])
+
+
+def test_robust_capacity_fit_clean_powerlaw_tight_errorbar():
+    k = np.arange(1, 1001, dtype=np.float64)
+    eig = k ** (-1.2)
+    fit = robust_capacity_fit(eig, num_bins=24)
+    assert abs(fit['b'] - 1.2) < 0.05
+    assert fit['b_std'] < 0.05  # seeds agree on a clean single power law
+    assert fit['log_rmse'] < 0.02
+    assert fit['k_hi'] - fit['k_lo'] > 100  # a wide window, not a sliver near the end
+
+
+def test_robust_capacity_fit_excludes_head_and_tail():
+    k = np.arange(1, 1001, dtype=np.float64)
+    eig = k ** (-1.2)
+    eig[:10] *= np.linspace(3.0, 1.0, 10)          # curved head
+    eig[-100:] *= np.geomspace(1.0, 1e-4, 100)     # sharp finite-dimension cliff
+    fit = robust_capacity_fit(eig, num_bins=24)
+    assert abs(fit['b'] - 1.2) < 0.1               # recovers the bulk exponent
+    assert fit['k_lo'] >= 5                          # head excluded
+    assert fit['k_hi'] <= 960                        # cliff excluded
+
+
+def test_robust_powerlaw_fit_curved_gives_larger_errorbar():
+    k = np.arange(1, 2001, dtype=np.float64)
+    clean = k ** (-1.0)
+    # two-regime (curved) spectrum: shallow then steep
+    curved = np.where(k <= 200, k ** (-0.6), (200.0 ** (-0.6 + 1.3)) * k ** (-1.3))
+    clean_fit = robust_powerlaw_fit(k, clean, 24)
+    curved_fit = robust_powerlaw_fit(k, curved, 24)
+    assert curved_fit['slope_std'] > clean_fit['slope_std']
 
 
 def test_compute_svd_source_matches_svd():

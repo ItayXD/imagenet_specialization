@@ -287,6 +287,189 @@ def robust_loglog_slope(
     }
 
 
+def _ols_slope(log_x: np.ndarray, log_y: np.ndarray) -> float:
+    if log_x.size < 2 or np.ptp(log_x) <= 0:
+        return float('nan')
+    return float(np.polyfit(log_x, log_y, deg=1)[0])
+
+
+def _grow_window_slope(
+    fit_fn,
+    x_min: float,
+    x_max: float,
+    anchor: float,
+    span: float,
+    *,
+    init_frac: float,
+    step_frac: float,
+    rmse_tol: float,
+) -> tuple[float, float, float, int]:
+    """Grow a fit window outward from an anchor while it still fits a single line well.
+
+    ``fit_fn(log_lo, log_hi) -> (slope, rmse)`` fits over [exp(log_lo), exp(log_hi)] using
+    the same binned-robust estimator used for plotting/fig1. Start from a small window
+    (fraction ``init_frac`` of the log-range ``span``) around ``anchor`` and repeatedly
+    extend whichever side keeps the binned RMSE lowest, but only while it stays below
+    ``rmse_tol``. When extending either side would push RMSE past the tolerance (head/tail
+    curvature bends the line), stop. Returns (log_lo, log_hi, slope, n_steps).
+    """
+    step = max(step_frac * span, 1e-6)
+    lo = max(x_min, anchor - init_frac * span)
+    hi = min(x_max, anchor + init_frac * span)
+
+    slope, _ = fit_fn(lo, hi)
+    while not np.isfinite(slope) and (lo > x_min or hi < x_max):
+        lo = max(x_min, lo - step)
+        hi = min(x_max, hi + step)
+        slope, _ = fit_fn(lo, hi)
+    if not np.isfinite(slope):
+        return lo, hi, float('nan'), 0
+
+    steps = 0
+    while True:
+        options = []
+        if hi < x_max:
+            new_hi = min(x_max, hi + step)
+            s, r = fit_fn(lo, new_hi)
+            if np.isfinite(r) and r <= rmse_tol:
+                options.append((r, lo, new_hi, s))
+        if lo > x_min:
+            new_lo = max(x_min, lo - step)
+            s, r = fit_fn(new_lo, hi)
+            if np.isfinite(r) and r <= rmse_tol:
+                options.append((r, new_lo, hi, s))
+        if not options:
+            break  # extending either side breaks the single-line fit -> regime edge
+        options.sort(key=lambda o: o[0])
+        _, lo, hi, slope = options[0]
+        steps += 1
+        if lo <= x_min and hi >= x_max:
+            break
+    return lo, hi, slope, steps
+
+
+def robust_powerlaw_fit(
+    positions: np.ndarray,
+    values: np.ndarray,
+    num_bins: int,
+    *,
+    n_seeds: int = 12,
+    rng_seed: int = 0,
+    init_frac: float = 0.06,
+    step_frac: float = 0.02,
+    rmse_tol: float = 0.06,
+    min_points: int = 10,
+    anchor_lo: float = 0.25,
+    anchor_hi: float = 0.75,
+) -> dict[str, Any]:
+    """Seed-and-grow power-law fit: robust exponent + window + across-seed error bar.
+
+    Plants ``n_seeds`` anchors at random log-positions in [anchor_lo, anchor_hi] of the
+    range and grows a window around each while the binned-robust log-log fit stays clean
+    (RMSE <= rmse_tol; same estimator used for plotting). Per-seed slopes are aggregated
+    (median) with their spread (std) as an honest error bar: on a clean single power law
+    seeds agree (small std, wide window); on a curved spectrum they settle in different
+    regimes (large std), flagging the ambiguity. Returns the median window [k_lo, k_hi],
+    seed slopes, and their std.
+    """
+    positions = np.asarray(positions, dtype=np.float64).reshape(-1)
+    values = np.asarray(values, dtype=np.float64).reshape(-1)
+    mask = (positions > 0) & (values > 0) & np.isfinite(values)
+    log_x = np.log(positions[mask])
+    order = np.argsort(log_x)
+    log_x = log_x[order]
+
+    def fit_fn(log_lo: float, log_hi: float) -> tuple[float, float]:
+        k_lo = max(1, int(round(np.exp(log_lo))))
+        k_hi = int(round(np.exp(log_hi)))
+        in_win = int(np.sum((positions >= k_lo) & (positions <= k_hi) & (values > 0)))
+        if in_win < min_points or k_hi <= k_lo:
+            return float('nan'), float('nan')
+        r = robust_loglog_slope(positions, values, num_bins, k_lo=k_lo, k_hi=k_hi)
+        return r['slope'], r['log_rmse']
+
+    if log_x.size < max(2 * min_points, 4):
+        s, _ = fit_fn(log_x[0], log_x[-1]) if log_x.size >= 2 else (float('nan'), None)
+        lo_k = int(round(np.exp(log_x[0]))) if log_x.size else 1
+        hi_k = int(round(np.exp(log_x[-1]))) if log_x.size else 1
+        return {'slope': s, 'slope_std': float('nan'), 'k_lo': max(1, lo_k),
+                'k_hi': max(1, hi_k), 'seed_slopes': np.asarray([s]), 'n_seeds_used': 1}
+
+    span = float(log_x[-1] - log_x[0])
+    x_min = float(log_x[0])
+    rng = np.random.default_rng(int(rng_seed))
+    anchors = x_min + rng.uniform(anchor_lo, anchor_hi, size=int(n_seeds)) * span
+
+    slopes: list[float] = []
+    los: list[float] = []
+    his: list[float] = []
+    for anchor in anchors:
+        lo, hi, slope, _ = _grow_window_slope(
+            fit_fn, x_min, float(log_x[-1]), float(anchor), span,
+            init_frac=init_frac, step_frac=step_frac, rmse_tol=rmse_tol,
+        )
+        if np.isfinite(slope):
+            slopes.append(slope)
+            los.append(lo)
+            his.append(hi)
+    if not slopes:
+        s, _ = fit_fn(log_x[0], log_x[-1])
+        return {'slope': s, 'slope_std': float('nan'),
+                'k_lo': int(max(1, round(np.exp(log_x[0])))),
+                'k_hi': int(round(np.exp(log_x[-1]))),
+                'seed_slopes': np.asarray([s]), 'n_seeds_used': 0}
+
+    slopes_arr = np.asarray(slopes, dtype=np.float64)
+    los_arr = np.asarray(los)
+    his_arr = np.asarray(his)
+    spans = his_arr - los_arr
+    # On a curved spectrum, seeds settle in different regimes; the median window is then
+    # meaningless. The bulk/asymptotic regime (the one we want) is the large-k power law
+    # just before the finite-dimension cliff, so pick the clean window reaching the
+    # largest k_hi (among those spanning at least ~min_span_decades), tie-broken by span.
+    # The across-seed slope spread (MAD) is the error bar: large iff the exponent is
+    # range-dependent (curvature).
+    min_span = np.log(10.0) * 0.6  # ~0.6 decade
+    eligible = np.where(spans >= min_span)[0]
+    pool = eligible if eligible.size else np.arange(spans.size)
+    chosen = int(pool[np.argmax(his_arr[pool] + 1e-6 * spans[pool])])
+    median = float(np.median(slopes_arr))
+    mad = float(np.median(np.abs(slopes_arr - median)))
+    robust_std = 1.4826 * mad if slopes_arr.size >= 4 else float(np.std(slopes_arr))
+    return {
+        'slope': float(slopes_arr[chosen]),
+        'slope_std': robust_std,
+        'slope_std_raw': float(np.std(slopes_arr)),
+        'k_lo': int(max(1, round(np.exp(float(los_arr[chosen]))))),
+        'k_hi': int(round(np.exp(float(his_arr[chosen])))),
+        'seed_slopes': slopes_arr,
+        'n_seeds_used': int(slopes_arr.size),
+    }
+
+
+def robust_capacity_fit(eigenvalues: np.ndarray, num_bins: int, **seed_kwargs) -> dict[str, Any]:
+    """Capacity exponent b (lambda_k ~ k^{-b}) via seed-and-grow, with an error bar.
+
+    The window comes from robust_powerlaw_fit; the plotted line's slope/intercept/rmse
+    come from a binned robust fit over that window; the error bar is the across-seed std.
+    """
+    eigenvalues = np.asarray(eigenvalues, dtype=np.float64)
+    positions = np.arange(1, eigenvalues.size + 1, dtype=np.float64)
+    seed = robust_powerlaw_fit(positions, eigenvalues, num_bins, **seed_kwargs)
+    k_lo, k_hi = seed['k_lo'], seed['k_hi']
+    win = robust_loglog_slope(positions, eigenvalues, num_bins, k_lo=k_lo, k_hi=k_hi)
+    return {
+        'b': float(-seed['slope']),  # seed-median slope (matches the error bar)
+        'b_std': float(seed['slope_std']),
+        'intercept': float(win['intercept']),
+        'log_rmse': float(win['log_rmse']),
+        'k_lo': int(k_lo),
+        'k_hi': int(k_hi),
+        'seed_slopes': seed['seed_slopes'],
+        'n_seeds_used': seed['n_seeds_used'],
+    }
+
+
 def fit_source_exponents(
     what_squared: np.ndarray,
     num_bins: int,
@@ -450,6 +633,7 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
     what_hat = np.asarray(arrays['W_hat'], dtype=np.float64)
     a = np.asarray(arrays['a'], dtype=np.float64)
     capacity_b = float(np.asarray(arrays['capacity_exponent_b']))
+    capacity_b_std = float(np.asarray(arrays['capacity_b_std'])) if 'capacity_b_std' in arrays else float('nan')
     capacity_intercept = float(np.asarray(arrays['capacity_intercept']))
     acc_full = np.asarray(arrays['acc_full'], dtype=np.float64)
     ce_full = np.asarray(arrays['ce_full'], dtype=np.float64)
@@ -485,8 +669,10 @@ def _render_all_figures(arrays: dict[str, Any], output_dir: str, fmt: str = 'pdf
               markersize=3, alpha=0.7, label=r'$\lambda_k$')
     if np.isfinite(capacity_b):
         fit_line = np.exp(capacity_intercept) * bulk_k ** (-capacity_b)
+        b_label = fr'$b={capacity_b:.2f}\pm{capacity_b_std:.2f}$' if np.isfinite(capacity_b_std) \
+            else fr'$b={capacity_b:.2f}$'
         ax.loglog(bulk_k, fit_line, color='crimson', linewidth=2.4,
-                  label=fr'bulk fit $k^{{-b}}$, $b={capacity_b:.2f}$ ($k\in[{k_lo},{k_hi}]$)')
+                  label=fr'seed-grow fit $k^{{-b}}$, {b_label} ($k\in[{k_lo},{k_hi}]$)')
     ax.set_xlabel('PC index $k$')
     ax.set_ylabel(r'eigenvalue $\lambda_k$')
     ax.set_title(f'Feature (data) spectrum — {run_label}')
@@ -611,8 +797,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--eval-batch-size', type=int, default=250)
     parser.add_argument('--num-workers', type=int, default=8)
     parser.add_argument('--num-bins', type=int, default=24, help='Log-spaced bins over k for fits.')
-    parser.add_argument('--bulk-slope-tol', type=float, default=0.5,
-                        help='Local-slope tolerance (in slope units) for bulk-window detection.')
+    parser.add_argument('--fit-seeds', type=int, default=12,
+                        help='Number of seed anchors for the robust seed-and-grow capacity fit.')
+    parser.add_argument('--fit-rmse-tol', type=float, default=0.06,
+                        help='Max binned log-log RMSE while growing a seed window.')
     parser.add_argument('--compute-dtype', choices=['float32', 'bfloat16'], default='float32',
                         help='Forward-pass precision. float32 (default) evaluates the trained '
                              'weights with ~1e-5 reconstruction error and a clean covariance tail; '
@@ -855,18 +1043,20 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
     what_eff = weight_eff @ eigenvectors  # (C, D) — for exact truncation logits
     what_gauge_sq = what_gauge ** 2
 
-    # Bulk window: the asymptotic power-law regime of the data spectrum, excluding the
-    # early/head law and the finite-dimension tail. The same window (a property of the
-    # data eigenbasis) is used for both the capacity and the per-class source fits.
-    k_lo, k_hi, window_info = select_bulk_window(eigenvalues, slope_tol=args.bulk_slope_tol)
+    # Capacity fit via seed-and-grow: robust window + across-seed error bar (see
+    # robust_capacity_fit). The resulting bulk window [k_lo, k_hi] is reused for the
+    # per-class source fits (it is a property of the shared data eigenbasis).
+    capacity = robust_capacity_fit(
+        eigenvalues, args.num_bins, n_seeds=args.fit_seeds,
+        rng_seed=int(args.seed), rmse_tol=args.fit_rmse_tol,
+    )
+    k_lo, k_hi = capacity['k_lo'], capacity['k_hi']
     print(f'bulk_window=[{k_lo}, {k_hi}] of {num_features} PCs '
-          f'(local bulk slope~{window_info["b_bulk"]:.3f})')
+          f'(b={capacity["b"]:.3f}+/-{capacity["b_std"]:.3f}, rmse={capacity["log_rmse"]:.3f}, '
+          f'seeds={capacity["n_seeds_used"]})')
 
-    # Fits (restricted to the bulk window, robust estimator).
-    capacity = fit_capacity_exponent(eigenvalues, args.num_bins, k_lo=k_lo, k_hi=k_hi)
     source = fit_source_exponents(what_gauge_sq, args.num_bins, k_lo=k_lo, k_hi=k_hi)
     a = source['a']
-    print(f'capacity_exponent_b={capacity["b"]:.4f} (log_rmse={capacity["log_rmse"]:.3f})')
     num_negative_a = int(np.sum(np.isfinite(a) & (a < 0)))
     if num_negative_a:
         print(f'WARNING: {num_negative_a} classes still have negative source exponent a_i.')
@@ -931,8 +1121,10 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
         'log_A2': source['log_A2'].astype(np.float64),
         'class_fit_rmse': source['log_rmse'].astype(np.float64),
         'capacity_exponent_b': np.float64(capacity['b']),
+        'capacity_b_std': np.float64(capacity['b_std']),
         'capacity_intercept': np.float64(capacity['intercept']),
         'capacity_log_rmse': np.float64(capacity['log_rmse']),
+        'capacity_seed_slopes': np.asarray(capacity['seed_slopes'], dtype=np.float64),
         'bulk_k_lo': np.int64(k_lo),
         'bulk_k_hi': np.int64(k_hi),
         'acc_full': acc_full.astype(np.float64),
@@ -1015,9 +1207,10 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
         'classifier_recon_max_abs_diff': recon_max_diff,
         'bulk_k_lo': int(k_lo),
         'bulk_k_hi': int(k_hi),
-        'bulk_local_slope': float(window_info['b_bulk']),
         'capacity_exponent_b': float(capacity['b']),
+        'capacity_b_std': float(capacity['b_std']),
         'capacity_log_rmse': float(capacity['log_rmse']),
+        'capacity_fit_seeds': int(capacity['n_seeds_used']),
         'source_exponent_mean': float(np.mean(finite_a)) if finite_a.size else float('nan'),
         'source_exponent_std': float(np.std(finite_a)) if finite_a.size else float('nan'),
         'source_classes_fit': int(finite_a.size),
