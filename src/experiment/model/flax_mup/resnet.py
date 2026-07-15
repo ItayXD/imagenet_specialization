@@ -48,7 +48,12 @@ class ResNetBlock(nn.Module):
 						residual = self.norm(param_dtype=self.param_dtype,
 																 name='norm_proj', dtype=self.param_dtype)(residual)
 
-				return self.act(residual + y)
+				pre_act = residual + y
+				# Sow the pre-ReLU pre-activation so feature extractors can optionally read the
+				# block's zero-mean-ish features (before ReLU rectification injects the all-positive
+				# DC/common mode that dominates global-average-pooled post-ReLU features at init).
+				self.sow('intermediates', 'pre_act', pre_act)
+				return self.act(pre_act)
 
 
 class BottleneckResNetBlock(nn.Module):
@@ -88,7 +93,12 @@ class BottleneckResNetBlock(nn.Module):
 						residual = self.norm(param_dtype=self.param_dtype,
 																 name='norm_proj', dtype=self.param_dtype)(residual)
 
-				return self.act(residual + y)
+				pre_act = residual + y
+				# Sow the pre-ReLU pre-activation so feature extractors can optionally read the
+				# block's zero-mean-ish features (before ReLU rectification injects the all-positive
+				# DC/common mode that dominates global-average-pooled post-ReLU features at init).
+				self.sow('intermediates', 'pre_act', pre_act)
+				return self.act(pre_act)
 
 
 class ResNet(nn.Module):

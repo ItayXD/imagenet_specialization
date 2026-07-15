@@ -167,6 +167,36 @@ def _lambda_tag(rel: float) -> str:
     return f'lam{rel:g}'
 
 
+# Short filesystem tags for the non-default feature-preprocessing modes (used in run dirs).
+_PREPROC_TAG = {'per_sample_center': 'psc', 'per_sample_standardize': 'pss', 'pre_relu': 'prerelu'}
+
+
+def apply_feature_preproc(features: np.ndarray, mode: str) -> np.ndarray:
+    """Per-sample preprocessing to tame the ReLU+global-average-pool DC common mode.
+
+    The dominant feature eigenmode of GLOBAL-AVERAGE-POOLED post-ReLU features at init is the
+    all-positive DC/common mode that ReLU rectification injects and pooling preserves (see the
+    'pre_relu' feature_mode in _extract_features for the source-level alternative). These
+    per-sample transforms remove it downstream of extraction:
+
+      'none'/'pre_relu'      -> identity (pre_relu is handled at extraction, not post hoc).
+      'per_sample_center'    -> subtract each sample's mean over feature dims (removes the
+                                ~all-ones common component that is the dominant eigenmode).
+      'per_sample_standardize' -> additionally divide by each sample's std over feature dims
+                                (Coates & Ng 2011 per-sample brightness/contrast normalization).
+    """
+    f = np.asarray(features, dtype=np.float64)
+    if mode in ('none', 'pre_relu', 'post_relu'):
+        return f
+    centered = f - f.mean(axis=1, keepdims=True)
+    if mode == 'per_sample_center':
+        return centered
+    if mode == 'per_sample_standardize':
+        std = f.std(axis=1, keepdims=True)
+        return centered / np.where(std > 0, std, 1.0)
+    raise ValueError(f'unknown feature preproc {mode!r}')
+
+
 # --------------------------------------------------------------------------------------
 # Model-at-init / feature extraction plumbing (JAX + torch; runs on the cluster)
 # --------------------------------------------------------------------------------------
@@ -271,13 +301,32 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
     if args.residual_scale_init != 'zeros' and args.num_calib_batches > 0:
         variables = _calibrate_batchnorm(model, variables, train_loader, args.num_calib_batches)
 
-    # Features for fitting the ridge classifier (train) and for analysis (val).
-    print('extracting TRAIN features (for ridge fit)...')
-    feats_train, _logits_train, labels_train = _extract_features(model, variables, train_loader)
+    # Features for fitting the ridge classifier (train) and for analysis (val). feature_mode
+    # 'pre_relu' pools the block pre-activation (avoids the DC common mode at source); the
+    # per-sample preprocs are applied post hoc below.
+    feature_mode = 'pre_relu' if args.feature_preproc == 'pre_relu' else 'post_relu'
+    print(f'extracting TRAIN features (for ridge fit; feature_mode={feature_mode})...')
+    feats_train, _logits_train, labels_train = _extract_features(
+        model, variables, train_loader, feature_mode=feature_mode)
     print(f'train features={feats_train.shape} labels={labels_train.shape}')
     print('extracting VAL features (for analysis)...')
-    feats_val, _logits_val, labels_val = _extract_features(model, variables, val_loader)
+    feats_val, _logits_val, labels_val = _extract_features(
+        model, variables, val_loader, feature_mode=feature_mode)
     print(f'val features={feats_val.shape} labels={labels_val.shape}')
+
+    # Per-sample feature preprocessing (identity for 'none'/'pre_relu').
+    feats_train = apply_feature_preproc(feats_train, args.feature_preproc)
+    feats_val = apply_feature_preproc(feats_val, args.feature_preproc)
+    lam1_share = float('nan')
+    try:
+        ev = np.linalg.eigvalsh(np.cov(feats_val.astype(np.float64), rowvar=False))
+        ev = np.clip(ev, 0.0, None)
+        lam1_share = float(ev.max() / ev.sum()) if ev.sum() > 0 else float('nan')
+        eff_rank = float(ev.sum() ** 2 / (ev ** 2).sum()) if (ev ** 2).sum() > 0 else float('nan')
+        print(f'feature_preproc={args.feature_preproc}: val lambda1_share={lam1_share:.3f} '
+              f'eff_rank={eff_rank:.1f}')
+    except Exception:
+        pass
     num_features = int(feats_val.shape[1])
 
     # Ridge classifier paths over the lambda grid (fit on train features).
@@ -286,12 +335,14 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
 
     root = os.path.abspath(args.output_root) if args.output_root \
         else os.path.join(base_save_dir, 'init_regression_powerlaw')
+    pp_tag = _PREPROC_TAG.get(args.feature_preproc, '')
+    dir_suffix = f'_{pp_tag}' if pp_tag else ''
     for path in paths:
         rel = path['rel_lambda']
         tag = _lambda_tag(rel)
-        run_label = f'init_reg_w{width}_{tag}'
+        run_label = f'init_reg_w{width}_{tag}{dir_suffix}'
         output_dir = args.output_dir if (args.output_dir and not args.widths and len(paths) == 1) \
-            else os.path.join(root, dataset, f'init_reg_w{width}_{tag}')
+            else os.path.join(root, dataset, f'init_reg_w{width}_{tag}{dir_suffix}')
         os.makedirs(output_dir, exist_ok=True)
         # In-sample train accuracy of this ridge fit (diagnostic, not the analyzed metric).
         train_logits = feats_train @ path['W'].T + path['b']
@@ -321,6 +372,8 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_abs_lambda': np.float64(path['abs_lambda']),
                 'ridge_dof': np.float64(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'feature_preproc': args.feature_preproc,
+                'feature_lambda1_share': np.float64(lam1_share),
                 'num_train_images': np.int64(labels_train.size),
                 'init_seed': np.int64(args.init_seed + width),
                 'train_accuracy': np.float64(train_acc),
@@ -334,6 +387,8 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_lambda_scale_mode': args.ridge_lambda_scale,
                 'ridge_effective_dof': float(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'feature_preproc': args.feature_preproc,
+                'feature_lambda1_share': float(lam1_share),
                 'bn_calibration_batches': int(args.num_calib_batches),
                 'num_train_images': int(labels_train.size),
                 'num_val_images': int(labels_val.size),
@@ -371,6 +426,14 @@ def parse_args() -> argparse.Namespace:
                              "'random' draws N(1, std); 'zeros' keeps the inert faithful-t=0 map.")
     parser.add_argument('--residual-scale-std', type=float, default=0.5,
                         help="Std for --residual-scale-init random.")
+    parser.add_argument('--feature-preproc',
+                        choices=['none', 'per_sample_center', 'per_sample_standardize', 'pre_relu'],
+                        default='none',
+                        help="Tame the ReLU+global-average-pool DC common mode of at-init "
+                             "features. none: raw post-ReLU GAP features. per_sample_center / "
+                             "per_sample_standardize: subtract each sample's mean (and divide by "
+                             "std) over feature dims (Coates & Ng 2011). pre_relu: pool the block "
+                             "pre-activation (before ReLU) instead, avoiding the DC mode at source.")
     parser.add_argument('--num-train-images', type=int, default=150000,
                         help='Train images for the ridge fit (<=0 uses the full split).')
     parser.add_argument('--num-val-images', type=int, default=50000,

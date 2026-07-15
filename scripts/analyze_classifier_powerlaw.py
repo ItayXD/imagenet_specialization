@@ -984,12 +984,24 @@ def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int
     return _make_loader(dataset_obj, batch_size, num_workers)
 
 
-def _extract_features(model, variables, loader) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """Run the model over the loader, returning (features h, model logits, labels)."""
+def _extract_features(model, variables, loader, feature_mode: str = 'post_relu',
+                      ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Run the model over the loader, returning (features h, model logits, labels).
+
+    feature_mode selects the last ResNetBlock signal that is global-average-pooled into h:
+    'post_relu' (default) = the block's post-ReLU output (the conventional penultimate
+    feature, matching the trained-classifier pipeline); 'pre_relu' = the block's pre-ReLU
+    pre-activation (sown as 'pre_act'), which is ~zero-mean and avoids the all-positive DC
+    common mode that ReLU rectification injects and global-average-pooling preserves.
+    """
     import jax
     import jax.numpy as jnp
 
     from src.experiment.model.flax_mup.resnet import ResNetBlock
+
+    if feature_mode not in ('post_relu', 'pre_relu'):
+        raise ValueError(f"feature_mode must be 'post_relu' or 'pre_relu'; got {feature_mode!r}.")
+    inner_key = '__call__' if feature_mode == 'post_relu' else 'pre_act'
 
     def _is_resnet_block(module, method_name):
         del method_name
@@ -1007,7 +1019,7 @@ def _extract_features(model, variables, loader) -> tuple[np.ndarray, np.ndarray,
         if not block_keys:
             raise RuntimeError('capture_intermediates did not record any ResNetBlock outputs.')
         last_key = max(block_keys, key=lambda s: int(_block_re.match(s).group(1)))
-        feature_map = intermediates[last_key]['__call__'][0]
+        feature_map = intermediates[last_key][inner_key][0]
         h = jnp.mean(feature_map, axis=(1, 2))
         return logits, h
 
