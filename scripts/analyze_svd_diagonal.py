@@ -41,6 +41,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument('--transverse-smooth', type=int, default=2,
                         help='Half-width (in d) for smoothing the on-diagonal amplitude.')
     parser.add_argument('--n-null', type=int, default=400, help='Haar Monte-Carlo draws.')
+    parser.add_argument('--min-band-modes', type=int, default=8,
+                        help='Minimum singular modes p=min(C,D) required to attempt the '
+                             'diagonal-band/Haar analysis. Below this only the singular-value '
+                             'fit + r^2 heatmap are written. Default 8 lets low-class datasets '
+                             '(e.g. CIFAR-5M, C=10) run the band analysis (fits are '
+                             'underpowered with few modes, but the heatmap/Haar view is valid).')
     parser.add_argument('--seed', type=int, default=0, help='RNG seed for the Haar null.')
     parser.add_argument('--format', choices=['pdf', 'png'], default='png')
     return parser.parse_args()
@@ -743,13 +749,13 @@ def main() -> None:
     # heatmap is meaningful even when there are too few modes for the diagonal-band fits.
     written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
 
-    # The diagonal-band / Haar analysis of R needs many singular modes; skip when too few
-    # (e.g. CIFAR-5M has C=10 -> 10 modes). Only R data is generated, all under svd/right/.
-    if p_modes < 32:
-        print(f'only {p_modes} singular modes; skipping the R diagonal-band/Haar analysis '
+    # The diagonal-band / Haar analysis of R needs several singular modes; skip only below
+    # --min-band-modes (band-decay FITS are underpowered with few modes, but the heatmap +
+    # Haar view remain valid, so the default threshold is low enough to run C=10 datasets).
+    if p_modes < int(args.min_band_modes):
+        print(f'only {p_modes} singular modes (< --min-band-modes={args.min_band_modes}); '
+              f'skipping the R diagonal-band/Haar analysis '
               f'(singular-value fit + r^2 heatmap still written).')
-        # The r^2 heatmap is still an informative R visualization even with few modes.
-        written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
         for pth in written:
             print(f'wrote {pth}')
         return
