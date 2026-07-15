@@ -65,6 +65,7 @@ default_base_save_dir_for_dataset() {
 BASE_SAVE_DIR="${INIT_REG_BASE_SAVE_DIR:-$(default_base_save_dir_for_dataset)}"
 RESIDUAL_SCALE_INIT="${INIT_REG_RESIDUAL_SCALE_INIT:-ones}"
 FEATURE_PREPROC="${INIT_REG_FEATURE_PREPROC:-none}"
+POOL_MODE="${INIT_REG_POOL_MODE:-gap}"
 NUM_TRAIN_IMAGES="${INIT_REG_NUM_TRAIN_IMAGES:-150000}"
 NUM_VAL_IMAGES="${INIT_REG_NUM_VAL_IMAGES:-50000}"
 NUM_CALIB_BATCHES="${INIT_REG_NUM_CALIB_BATCHES:-100}"
@@ -107,6 +108,7 @@ CMD=(
   --base-save-dir "${BASE_SAVE_DIR}"
   --residual-scale-init "${RESIDUAL_SCALE_INIT}"
   --feature-preproc "${FEATURE_PREPROC}"
+  --pool-mode "${POOL_MODE}"
   --num-train-images "${NUM_TRAIN_IMAGES}"
   --num-val-images "${NUM_VAL_IMAGES}"
   --num-calib-batches "${NUM_CALIB_BATCHES}"
@@ -121,7 +123,7 @@ CMD=(
 )
 
 echo "Running at-init regression power-law analysis in job ${SLURM_JOB_ID}"
-echo "dataset=${DATASET} widths=${WIDTHS[*]} residual_scale_init=${RESIDUAL_SCALE_INIT} feature_preproc=${FEATURE_PREPROC}"
+echo "dataset=${DATASET} widths=${WIDTHS[*]} residual_scale_init=${RESIDUAL_SCALE_INIT} feature_preproc=${FEATURE_PREPROC} pool_mode=${POOL_MODE}"
 echo "ridge_rel_lambdas=${RIDGE_REL_LAMBDAS}"
 echo "base_save_dir=${BASE_SAVE_DIR}"
 echo "output_root=${OUTPUT_ROOT}"

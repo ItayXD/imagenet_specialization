@@ -305,13 +305,14 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
     # 'pre_relu' pools the block pre-activation (avoids the DC common mode at source); the
     # per-sample preprocs are applied post hoc below.
     feature_mode = 'pre_relu' if args.feature_preproc == 'pre_relu' else 'post_relu'
-    print(f'extracting TRAIN features (for ridge fit; feature_mode={feature_mode})...')
+    print(f'extracting TRAIN features (for ridge fit; feature_mode={feature_mode} '
+          f'spatial_mode={args.pool_mode})...')
     feats_train, _logits_train, labels_train = _extract_features(
-        model, variables, train_loader, feature_mode=feature_mode)
+        model, variables, train_loader, feature_mode=feature_mode, spatial_mode=args.pool_mode)
     print(f'train features={feats_train.shape} labels={labels_train.shape}')
     print('extracting VAL features (for analysis)...')
     feats_val, _logits_val, labels_val = _extract_features(
-        model, variables, val_loader, feature_mode=feature_mode)
+        model, variables, val_loader, feature_mode=feature_mode, spatial_mode=args.pool_mode)
     print(f'val features={feats_val.shape} labels={labels_val.shape}')
 
     # Per-sample feature preprocessing (identity for 'none'/'pre_relu').
@@ -336,7 +337,8 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
     root = os.path.abspath(args.output_root) if args.output_root \
         else os.path.join(base_save_dir, 'init_regression_powerlaw')
     pp_tag = _PREPROC_TAG.get(args.feature_preproc, '')
-    dir_suffix = f'_{pp_tag}' if pp_tag else ''
+    pool_tag = 'vec' if args.pool_mode == 'vec' else ''
+    dir_suffix = ''.join(f'_{t}' for t in (pool_tag, pp_tag) if t)
     for path in paths:
         rel = path['rel_lambda']
         tag = _lambda_tag(rel)
@@ -372,6 +374,7 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_abs_lambda': np.float64(path['abs_lambda']),
                 'ridge_dof': np.float64(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'pool_mode': args.pool_mode,
                 'feature_preproc': args.feature_preproc,
                 'feature_lambda1_share': np.float64(lam1_share),
                 'num_train_images': np.int64(labels_train.size),
@@ -387,6 +390,7 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_lambda_scale_mode': args.ridge_lambda_scale,
                 'ridge_effective_dof': float(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'pool_mode': args.pool_mode,
                 'feature_preproc': args.feature_preproc,
                 'feature_lambda1_share': float(lam1_share),
                 'bn_calibration_batches': int(args.num_calib_batches),
@@ -434,6 +438,12 @@ def parse_args() -> argparse.Namespace:
                              "per_sample_standardize: subtract each sample's mean (and divide by "
                              "std) over feature dims (Coates & Ng 2011). pre_relu: pool the block "
                              "pre-activation (before ReLU) instead, avoiding the DC mode at source.")
+    parser.add_argument('--pool-mode', choices=['gap', 'vec'], default='gap',
+                        help="How to collapse the last block's (H,W,C) map into features. "
+                             "gap: global-average-pool -> C dims (conventional; ill-conditioned "
+                             "at init by ~pixel-count, Xiao 2018 / Lee 2020). vec: flatten the "
+                             "whole map -> H*W*C dims (CNN-VEC; far better conditioned at init). "
+                             "vec dim = 49*(8*width) for ImageNet; primal-feasible up to ~w64.")
     parser.add_argument('--num-train-images', type=int, default=150000,
                         help='Train images for the ridge fit (<=0 uses the full split).')
     parser.add_argument('--num-val-images', type=int, default=50000,

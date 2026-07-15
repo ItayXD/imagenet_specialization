@@ -985,14 +985,19 @@ def _build_eval_loader(dataset: str, num_images: int, seed: int, batch_size: int
 
 
 def _extract_features(model, variables, loader, feature_mode: str = 'post_relu',
+                      spatial_mode: str = 'gap',
                       ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """Run the model over the loader, returning (features h, model logits, labels).
 
-    feature_mode selects the last ResNetBlock signal that is global-average-pooled into h:
-    'post_relu' (default) = the block's post-ReLU output (the conventional penultimate
-    feature, matching the trained-classifier pipeline); 'pre_relu' = the block's pre-ReLU
-    pre-activation (sown as 'pre_act'), which is ~zero-mean and avoids the all-positive DC
-    common mode that ReLU rectification injects and global-average-pooling preserves.
+    feature_mode selects the last ResNetBlock signal collapsed into h: 'post_relu' (default)
+    = the block's post-ReLU output (the conventional penultimate feature, matching the
+    trained-classifier pipeline); 'pre_relu' = the block's pre-ReLU pre-activation (sown as
+    'pre_act'), which is ~zero-mean.
+
+    spatial_mode selects how the (H, W, C) feature map is collapsed: 'gap' = global-average-
+    pool -> C dims (conventional, but at init its kernel is ill-conditioned by a factor of
+    the pixel count, Xiao et al. 2018 / Lee et al. 2020); 'vec' = flatten the whole map ->
+    H*W*C dims (better-conditioned at init, the CNN-VEC readout of that literature).
     """
     import jax
     import jax.numpy as jnp
@@ -1001,6 +1006,8 @@ def _extract_features(model, variables, loader, feature_mode: str = 'post_relu',
 
     if feature_mode not in ('post_relu', 'pre_relu'):
         raise ValueError(f"feature_mode must be 'post_relu' or 'pre_relu'; got {feature_mode!r}.")
+    if spatial_mode not in ('gap', 'vec'):
+        raise ValueError(f"spatial_mode must be 'gap' or 'vec'; got {spatial_mode!r}.")
     inner_key = '__call__' if feature_mode == 'post_relu' else 'pre_act'
 
     def _is_resnet_block(module, method_name):
@@ -1019,8 +1026,11 @@ def _extract_features(model, variables, loader, feature_mode: str = 'post_relu',
         if not block_keys:
             raise RuntimeError('capture_intermediates did not record any ResNetBlock outputs.')
         last_key = max(block_keys, key=lambda s: int(_block_re.match(s).group(1)))
-        feature_map = intermediates[last_key][inner_key][0]
-        h = jnp.mean(feature_map, axis=(1, 2))
+        feature_map = intermediates[last_key][inner_key][0]  # (B, H, W, C)
+        if spatial_mode == 'gap':
+            h = jnp.mean(feature_map, axis=(1, 2))  # (B, C)
+        else:  # 'vec': flatten the full spatial map
+            h = feature_map.reshape(feature_map.shape[0], -1)  # (B, H*W*C)
         return logits, h
 
     features: list[np.ndarray] = []
