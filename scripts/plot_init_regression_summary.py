@@ -86,7 +86,7 @@ def _lambda_label(rel: float) -> str:
     return r'$\lambda_{\mathrm{rel}}=0$ (min-norm)' if rel == 0 else fr'$\lambda_{{\mathrm{{rel}}}}={rel:g}$'
 
 
-def render(runs: list[dict], out_path: str, ref_lambda: float) -> None:
+def render(runs: list[dict], out_path: str, ref_lambda: float, dataset_label: str = '') -> None:
     widths = _widths(runs)
     lambdas = _lambdas(runs)
     wcolors = plt.cm.viridis(np.linspace(0.1, 0.9, len(widths)))
@@ -182,7 +182,8 @@ def render(runs: list[dict], out_path: str, ref_lambda: float) -> None:
     ax.grid(True, which='both', alpha=0.25)
     ax.legend(fontsize=8, ncol=2)
 
-    fig.suptitle('ResNet18 at init + ridge readout — capacity / source / SVD structure (ImageNet)',
+    suffix = f' ({dataset_label})' if dataset_label else ''
+    fig.suptitle(f'ResNet18 at init + ridge readout — capacity / source / SVD structure{suffix}',
                  fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.97))
     fig.savefig(out_path, bbox_inches='tight', dpi=200)
@@ -219,7 +220,7 @@ def main() -> None:
     os.makedirs(out_dir, exist_ok=True)
     fig_path = os.path.join(out_dir, f'init_regression_summary.{args.format}')
     csv_path = os.path.join(out_dir, 'init_regression_summary.csv')
-    render(runs, fig_path, args.ref_lambda)
+    render(runs, fig_path, args.ref_lambda, dataset_label=os.path.basename(os.path.normpath(args.root)))
     write_table(runs, csv_path)
     print(f'{len(runs)} runs, widths={_widths(runs)}, lambdas={_lambdas(runs)}')
     print(f'wrote {fig_path}')

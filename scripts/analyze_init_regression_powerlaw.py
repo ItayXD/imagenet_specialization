@@ -185,7 +185,9 @@ def _build_split_loader(dataset: str, split: str, num_images: int, seed: int,
         size = num_images if num_images > 0 else 50000
         # Distinct seed per split so train/val draws are (near-)disjoint from the 5M pool.
         subset = _load_cifar5m_probe_subset_builder()(CIFAR5M_FOLDER, size, seed)
-        return _make_loader(subset, batch_size, num_workers)
+        # The cifar5m probe transform holds an unpicklable local lambda, so spawn workers
+        # cannot serialize the dataset; load in-process (num_workers=0). Images are 32x32.
+        return _make_loader(subset, batch_size, 0)
 
     from scripts.analyze_exchangeability import _load_imagenet_torchvision
     from src.run.constants import IMAGENET_FOLDER
