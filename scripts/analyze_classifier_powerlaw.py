@@ -1052,6 +1052,245 @@ def _cast_tree(tree, dtype):
     return jax.tree_util.tree_map(_cast, tree)
 
 
+def run_powerlaw_analysis(
+    *,
+    features: np.ndarray,
+    labels: np.ndarray,
+    weight_eff: np.ndarray,
+    bias: np.ndarray,
+    num_classes: int,
+    run_label: str,
+    output_dir: str,
+    num_bins: int = 24,
+    fit_seeds: int = 64,
+    fit_rmse_tol: float = 0.10,
+    seed: int = 2423,
+    trunc_list: list[int] | None = None,
+    no_plots: bool = False,
+    model_logits: np.ndarray | None = None,
+    source_arrays: dict[str, Any] | None = None,
+    source_summary: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Source/capacity/truncation analysis for a linear classifier over fixed features.
+
+    Given features h(x) (N, D), a linear classifier weight_eff (C, D) + bias (C,), and
+    labels, this diagonalizes the centered feature covariance to get the data eigenbasis V,
+    rotates the softmax-gauge-fixed classifier into it (What = W V), fits the capacity
+    exponent b (lambda_k ~ k^-b) and per-class source exponents a_i (What_ik^2 ~ k^-2a_i),
+    measures PCA-truncation recovery, and writes powerlaw_arrays.npz + per_class_metrics.csv
+    + truncation_curve.csv + fit_summary.json (+ figures) under output_dir.
+
+    model_logits defaults to features @ weight_eff.T + bias (the classifier's own
+    predictions); pass the model's actual forward-pass logits to reproduce those exactly.
+    source_arrays / source_summary are merged into the saved npz / JSON for provenance
+    (e.g. checkpoint id and muP divisor for a trained readout, or the ridge lambda and
+    residual-scale init for an at-init regression classifier). Returns the arrays dict.
+    """
+    os.makedirs(output_dir, exist_ok=True)
+    features = np.asarray(features, dtype=np.float64)
+    labels = np.asarray(labels, dtype=np.int64).reshape(-1)
+    weight_eff = np.asarray(weight_eff, dtype=np.float64)
+    bias = np.asarray(bias, dtype=np.float64)
+    num_samples, num_features = features.shape
+    if model_logits is None:
+        model_logits = features @ weight_eff.T + bias
+    model_logits = np.asarray(model_logits, dtype=np.float64)
+
+    # Softmax-gauge removal, feature PCA, and rotation into the data eigenbasis.
+    weight_gauge = row_center_classifier(weight_eff)  # (C, D)
+    feature_mean, eigenvalues, eigenvectors = feature_pca(features)
+    what_gauge = weight_gauge @ eigenvectors  # (C, D) — analyzed target
+    what_eff = weight_eff @ eigenvectors  # (C, D) — for exact truncation logits
+    what_gauge_sq = what_gauge ** 2
+
+    # Capacity fit via seed-and-grow: robust window + across-seed error bar. The bulk
+    # window [k_lo, k_hi] is reused for the per-class source fits.
+    capacity = robust_capacity_fit(
+        eigenvalues, num_bins, n_seeds=fit_seeds, rng_seed=int(seed), rmse_tol=fit_rmse_tol,
+    )
+    k_lo, k_hi = capacity['k_lo'], capacity['k_hi']
+    print(f'bulk_window=[{k_lo}, {k_hi}] of {num_features} PCs '
+          f'(b={capacity["b"]:.3f}+/-{capacity["b_std"]:.3f}, rmse={capacity["log_rmse"]:.3f}, '
+          f'seeds={capacity["n_seeds_used"]})')
+
+    source = fit_source_exponents(what_gauge_sq, num_bins, k_lo=k_lo, k_hi=k_hi)
+    a = source['a']
+    num_negative_a = int(np.sum(np.isfinite(a) & (a < 0)))
+    if num_negative_a:
+        print(f'WARNING: {num_negative_a} classes still have negative source exponent a_i.')
+    finite_a = a[np.isfinite(a)]
+    print(f'source_exponent a: mean={np.mean(finite_a):.4f} std={np.std(finite_a):.4f} '
+          f'({finite_a.size}/{num_classes} classes fit)')
+
+    # Empirical per-class metrics (the classifier's own logits).
+    acc_full, ce_full = per_class_accuracy_and_ce(model_logits, labels, num_classes)
+    overall_acc_full = float(np.mean(model_logits.argmax(1) == labels))
+    overall_ce_full = float(np.mean(-_log_softmax(model_logits)[np.arange(num_samples), labels]))
+    print(f'overall val accuracy={overall_acc_full:.4f} cross-entropy={overall_ce_full:.4f}')
+
+    # PCA-truncation eval.
+    trunc_m = np.asarray(trunc_list if trunc_list else default_trunc_list(num_features),
+                         dtype=np.int64)
+    trunc_m = np.asarray(sorted({int(min(max(m, 1), num_features)) for m in trunc_m}), dtype=np.int64)
+    coeffs = (features - feature_mean) @ eigenvectors  # (N, D)
+    base_logits = feature_mean @ weight_eff.T + bias  # (C,)
+    acc_by_m = np.empty(trunc_m.size, dtype=np.float64)
+    ce_by_m = np.empty(trunc_m.size, dtype=np.float64)
+    class_acc_by_m = np.empty((num_classes, trunc_m.size), dtype=np.float64)
+    class_ce_by_m = np.empty((num_classes, trunc_m.size), dtype=np.float64)
+    for j, m in enumerate(trunc_m):
+        logits_m = truncated_logits(coeffs, what_eff, base_logits, int(m))
+        acc_by_m[j] = float(np.mean(logits_m.argmax(1) == labels))
+        ce_by_m[j] = float(np.mean(-_log_softmax(logits_m)[np.arange(num_samples), labels]))
+        class_acc, class_ce = per_class_accuracy_and_ce(logits_m, labels, num_classes)
+        class_acc_by_m[:, j] = class_acc
+        class_ce_by_m[:, j] = class_ce
+        print(f'  m={int(m):5d}: acc={acc_by_m[j]:.4f} ce={ce_by_m[j]:.4f}')
+    tail_by_m = residual_tail_mass(eigenvalues, what_gauge_sq, trunc_m)
+
+    # Low-/high-a decile group curves for the truncation-curve CSV.
+    low_group_acc = np.full(trunc_m.size, np.nan)
+    high_group_acc = np.full(trunc_m.size, np.nan)
+    finite_idx = np.where(np.isfinite(a))[0]
+    if finite_idx.size >= 20:
+        sorted_idx = finite_idx[np.argsort(a[finite_idx])]
+        decile = max(1, sorted_idx.size // 10)
+        low_group_acc = np.nanmean(class_acc_by_m[sorted_idx[:decile]], axis=0)
+        high_group_acc = np.nanmean(class_acc_by_m[sorted_idx[-decile:]], axis=0)
+
+    # Accuracy-rank ordering (0 = hardest), reported as an empirical measurement.
+    acc_rank = np.full(num_classes, np.nan)
+    valid_acc = np.where(np.isfinite(acc_full))[0]
+    order = np.argsort(acc_full[valid_acc])
+    ranks = np.empty(order.size)
+    ranks[order] = np.arange(order.size)
+    acc_rank[valid_acc] = ranks
+
+    r_acc, rho_acc = _pearson_spearman(a, acc_full)
+    r_ce, rho_ce = _pearson_spearman(a, ce_full)
+
+    # --- Save raw arrays ---
+    arrays: dict[str, Any] = {
+        'eigenvalues': eigenvalues.astype(np.float64),
+        'W_hat': what_gauge.astype(np.float32),
+        'a': a.astype(np.float64),
+        'log_A2': source['log_A2'].astype(np.float64),
+        'class_fit_rmse': source['log_rmse'].astype(np.float64),
+        'capacity_exponent_b': np.float64(capacity['b']),
+        'capacity_b_sem': np.float64(capacity['b_sem']),
+        'capacity_b_std': np.float64(capacity['b_std']),
+        'capacity_intercept': np.float64(capacity['intercept']),
+        'capacity_log_rmse': np.float64(capacity['log_rmse']),
+        'capacity_seed_slopes': np.asarray(capacity['seed_slopes'], dtype=np.float64),
+        'capacity_exclusion_frac': np.asarray(capacity['exclusion_frac'], dtype=np.float64),
+        'bulk_k_lo': np.int64(k_lo),
+        'bulk_k_hi': np.int64(k_hi),
+        'acc_full': acc_full.astype(np.float64),
+        'ce_full': ce_full.astype(np.float64),
+        'acc_rank': acc_rank.astype(np.float64),
+        'trunc_m': trunc_m.astype(np.int64),
+        'acc_by_m': acc_by_m.astype(np.float64),
+        'ce_by_m': ce_by_m.astype(np.float64),
+        'class_acc_by_m': class_acc_by_m.astype(np.float64),
+        'class_ce_by_m': class_ce_by_m.astype(np.float64),
+        'tail_by_m': tail_by_m.astype(np.float64),
+        'feature_mean': feature_mean.astype(np.float32),
+        'run_label': run_label,
+        'num_samples': np.int64(num_samples),
+        'num_features': np.int64(num_features),
+        'num_classes': np.int64(num_classes),
+        'num_bins': np.int64(num_bins),
+    }
+    arrays.update(source_arrays or {})
+    npz_path = os.path.join(output_dir, 'powerlaw_arrays.npz')
+    np.savez_compressed(npz_path, **arrays)
+    print(f'wrote {npz_path}')
+
+    # --- Per-class metrics CSV ---
+    m_ref = 64 if 64 in set(int(x) for x in trunc_m) else int(trunc_m[min(len(trunc_m) - 1, len(trunc_m) // 2)])
+    ref_col = int(np.where(trunc_m == m_ref)[0][0])
+    per_class_path = os.path.join(output_dir, 'per_class_metrics.csv')
+    with open(per_class_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            'class_index', 'a_i', 'log_A2', 'source_fit_rmse', 'acc_full', 'ce_full',
+            'acc_rank', f'tail_at_m{m_ref}',
+        ])
+        writer.writeheader()
+        for c in range(num_classes):
+            writer.writerow({
+                'class_index': c,
+                'a_i': float(a[c]),
+                'log_A2': float(source['log_A2'][c]),
+                'source_fit_rmse': float(source['log_rmse'][c]),
+                'acc_full': float(acc_full[c]),
+                'ce_full': float(ce_full[c]),
+                'acc_rank': float(acc_rank[c]),
+                f'tail_at_m{m_ref}': float(tail_by_m[c, ref_col]),
+            })
+    print(f'wrote {per_class_path}')
+
+    # --- Truncation curve CSV ---
+    trunc_path = os.path.join(output_dir, 'truncation_curve.csv')
+    with open(trunc_path, 'w', newline='', encoding='utf-8') as handle:
+        writer = csv.DictWriter(handle, fieldnames=[
+            'm', 'overall_acc', 'overall_ce', 'low_a_group_acc', 'high_a_group_acc',
+        ])
+        writer.writeheader()
+        for j, m in enumerate(trunc_m):
+            writer.writerow({
+                'm': int(m),
+                'overall_acc': float(acc_by_m[j]),
+                'overall_ce': float(ce_by_m[j]),
+                'low_a_group_acc': float(low_group_acc[j]),
+                'high_a_group_acc': float(high_group_acc[j]),
+            })
+    print(f'wrote {trunc_path}')
+
+    # --- Fit summary JSON ---
+    summary: dict[str, Any] = {
+        'run_label': run_label,
+        'num_samples': int(num_samples),
+        'num_features': int(num_features),
+        'num_classes': int(num_classes),
+        'num_bins': int(num_bins),
+        'bulk_k_lo': int(k_lo),
+        'bulk_k_hi': int(k_hi),
+        'capacity_exponent_b': float(capacity['b']),
+        'capacity_b_sem': float(capacity['b_sem']),
+        'capacity_b_std': float(capacity['b_std']),
+        'capacity_log_rmse': float(capacity['log_rmse']),
+        'capacity_fit_seeds': int(capacity['n_seeds_used']),
+        'source_exponent_mean': float(np.mean(finite_a)) if finite_a.size else float('nan'),
+        'source_exponent_std': float(np.std(finite_a)) if finite_a.size else float('nan'),
+        'source_classes_fit': int(finite_a.size),
+        'source_negative_count': num_negative_a,
+        'overall_val_accuracy': overall_acc_full,
+        'overall_val_cross_entropy': overall_ce_full,
+        'accuracy_at_full_m': float(acc_by_m[-1]),
+        'corr_a_vs_accuracy_pearson': r_acc,
+        'corr_a_vs_accuracy_spearman': rho_acc,
+        'corr_a_vs_ce_pearson': r_ce,
+        'corr_a_vs_ce_spearman': rho_ce,
+        'trunc_m': [int(m) for m in trunc_m],
+    }
+    summary.update(source_summary or {})
+    summary_path = os.path.join(output_dir, 'fit_summary.json')
+    with open(summary_path, 'w', encoding='utf-8') as handle:
+        json.dump(summary, handle, indent=2)
+    print(f'wrote {summary_path}')
+    print(f'corr(a, accuracy): pearson={r_acc:.3f} spearman={rho_acc:.3f}')
+    print(f'corr(a, cross-entropy): pearson={r_ce:.3f} spearman={rho_ce:.3f}')
+
+    # --- Figures ---
+    if not no_plots:
+        plot_arrays = {k: (np.asarray(v) if not isinstance(v, str) else v) for k, v in arrays.items()}
+        for path in _render_all_figures(plot_arrays, output_dir, fmt='pdf'):
+            print(f'wrote {path}')
+
+    print(f'done; outputs under {output_dir}')
+    return arrays
+
+
 def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
                    base_save_dir, run_spec, run_id_resolution, cached_batches) -> None:
     """Restore one width, extract features from the cached batches, fit, and save."""
@@ -1128,212 +1367,39 @@ def _analyze_width(*, width, args, dataset, num_classes, compute_dtype, spec,
     recon_max_diff = float(np.max(np.abs(recon - model_logits.astype(np.float64))))
     print(f'divisor={divisor:.6g} classifier_recon_max_abs_diff={recon_max_diff:.4g}')
 
-    # Softmax-gauge removal, feature PCA, and rotation into the data eigenbasis.
-    weight_gauge = row_center_classifier(weight_eff)  # (C, D)
-    feature_mean, eigenvalues, eigenvectors = feature_pca(features)
-    what_gauge = weight_gauge @ eigenvectors  # (C, D) — analyzed target
-    what_eff = weight_eff @ eigenvectors  # (C, D) — for exact truncation logits
-    what_gauge_sq = what_gauge ** 2
-
-    # Capacity fit via seed-and-grow: robust window + across-seed error bar (see
-    # robust_capacity_fit). The resulting bulk window [k_lo, k_hi] is reused for the
-    # per-class source fits (it is a property of the shared data eigenbasis).
-    capacity = robust_capacity_fit(
-        eigenvalues, args.num_bins, n_seeds=args.fit_seeds,
-        rng_seed=int(args.seed), rmse_tol=args.fit_rmse_tol,
-    )
-    k_lo, k_hi = capacity['k_lo'], capacity['k_hi']
-    print(f'bulk_window=[{k_lo}, {k_hi}] of {num_features} PCs '
-          f'(b={capacity["b"]:.3f}+/-{capacity["b_std"]:.3f}, rmse={capacity["log_rmse"]:.3f}, '
-          f'seeds={capacity["n_seeds_used"]})')
-
-    source = fit_source_exponents(what_gauge_sq, args.num_bins, k_lo=k_lo, k_hi=k_hi)
-    a = source['a']
-    num_negative_a = int(np.sum(np.isfinite(a) & (a < 0)))
-    if num_negative_a:
-        print(f'WARNING: {num_negative_a} classes still have negative source exponent a_i.')
-    finite_a = a[np.isfinite(a)]
-    print(f'source_exponent a: mean={np.mean(finite_a):.4f} std={np.std(finite_a):.4f} '
-          f'({finite_a.size}/{num_classes} classes fit)')
-
-    # Empirical per-class metrics (full model).
-    acc_full, ce_full = per_class_accuracy_and_ce(model_logits, labels, num_classes)
-    overall_acc_full = float(np.mean(model_logits.argmax(1) == labels))
-    overall_ce_full = float(np.mean(-_log_softmax(model_logits)[np.arange(num_samples), labels]))
-    print(f'overall val accuracy={overall_acc_full:.4f} cross-entropy={overall_ce_full:.4f}')
-
-    # PCA-truncation eval.
-    trunc_m = np.asarray(args.trunc_list if args.trunc_list else default_trunc_list(num_features),
-                         dtype=np.int64)
-    trunc_m = np.asarray(sorted({int(min(max(m, 1), num_features)) for m in trunc_m}), dtype=np.int64)
-    coeffs = (features.astype(np.float64) - feature_mean) @ eigenvectors  # (N, D)
-    base_logits = feature_mean @ weight_eff.T + bias  # (C,)
-    acc_by_m = np.empty(trunc_m.size, dtype=np.float64)
-    ce_by_m = np.empty(trunc_m.size, dtype=np.float64)
-    class_acc_by_m = np.empty((num_classes, trunc_m.size), dtype=np.float64)
-    class_ce_by_m = np.empty((num_classes, trunc_m.size), dtype=np.float64)
-    for j, m in enumerate(trunc_m):
-        logits_m = truncated_logits(coeffs, what_eff, base_logits, int(m))
-        acc_by_m[j] = float(np.mean(logits_m.argmax(1) == labels))
-        ce_by_m[j] = float(np.mean(-_log_softmax(logits_m)[np.arange(num_samples), labels]))
-        class_acc, class_ce = per_class_accuracy_and_ce(logits_m, labels, num_classes)
-        class_acc_by_m[:, j] = class_acc
-        class_ce_by_m[:, j] = class_ce
-        print(f'  m={int(m):5d}: acc={acc_by_m[j]:.4f} ce={ce_by_m[j]:.4f}')
-    tail_by_m = residual_tail_mass(eigenvalues, what_gauge_sq, trunc_m)
-
-    # Low-/high-a decile group curves for the truncation-curve CSV.
-    low_group_acc = np.full(trunc_m.size, np.nan)
-    high_group_acc = np.full(trunc_m.size, np.nan)
-    finite_idx = np.where(np.isfinite(a))[0]
-    if finite_idx.size >= 20:
-        sorted_idx = finite_idx[np.argsort(a[finite_idx])]
-        decile = max(1, sorted_idx.size // 10)
-        low_group_acc = np.nanmean(class_acc_by_m[sorted_idx[:decile]], axis=0)
-        high_group_acc = np.nanmean(class_acc_by_m[sorted_idx[-decile:]], axis=0)
-
-    # Accuracy-rank ordering (0 = hardest), reported as an empirical measurement.
-    acc_rank = np.full(num_classes, np.nan)
-    valid_acc = np.where(np.isfinite(acc_full))[0]
-    order = np.argsort(acc_full[valid_acc])
-    ranks = np.empty(order.size)
-    ranks[order] = np.arange(order.size)
-    acc_rank[valid_acc] = ranks
-
-    r_acc, rho_acc = _pearson_spearman(a, acc_full)
-    r_ce, rho_ce = _pearson_spearman(a, ce_full)
-
     run_label = f'{source_run_id}_w{width}'
-
-    # --- Save raw arrays ---
-    arrays = {
-        'eigenvalues': eigenvalues.astype(np.float64),
-        'W_hat': what_gauge.astype(np.float32),
-        'a': a.astype(np.float64),
-        'log_A2': source['log_A2'].astype(np.float64),
-        'class_fit_rmse': source['log_rmse'].astype(np.float64),
-        'capacity_exponent_b': np.float64(capacity['b']),
-        'capacity_b_sem': np.float64(capacity['b_sem']),
-        'capacity_b_std': np.float64(capacity['b_std']),
-        'capacity_intercept': np.float64(capacity['intercept']),
-        'capacity_log_rmse': np.float64(capacity['log_rmse']),
-        'capacity_seed_slopes': np.asarray(capacity['seed_slopes'], dtype=np.float64),
-        'capacity_exclusion_frac': np.asarray(capacity['exclusion_frac'], dtype=np.float64),
-        'bulk_k_lo': np.int64(k_lo),
-        'bulk_k_hi': np.int64(k_hi),
-        'acc_full': acc_full.astype(np.float64),
-        'ce_full': ce_full.astype(np.float64),
-        'acc_rank': acc_rank.astype(np.float64),
-        'trunc_m': trunc_m.astype(np.int64),
-        'acc_by_m': acc_by_m.astype(np.float64),
-        'ce_by_m': ce_by_m.astype(np.float64),
-        'class_acc_by_m': class_acc_by_m.astype(np.float64),
-        'class_ce_by_m': class_ce_by_m.astype(np.float64),
-        'tail_by_m': tail_by_m.astype(np.float64),
-        'feature_mean': feature_mean.astype(np.float32),
-        'run_label': run_label,
-        'dataset': dataset,
-        'optimizer_key': args.optimizer_key,
-        'width': np.int64(width),
-        'source_run_id': source_run_id,
-        'images_seen': np.int64(images_seen),
-        'num_samples': np.int64(num_samples),
-        'num_features': np.int64(num_features),
-        'num_classes': np.int64(num_classes),
-        'num_bins': np.int64(args.num_bins),
-    }
-    npz_path = os.path.join(output_dir, 'powerlaw_arrays.npz')
-    np.savez_compressed(npz_path, **arrays)
-    print(f'wrote {npz_path}')
-
-    # --- Per-class metrics CSV ---
-    m_ref = 64 if 64 in set(int(x) for x in trunc_m) else int(trunc_m[min(len(trunc_m) - 1, len(trunc_m) // 2)])
-    ref_col = int(np.where(trunc_m == m_ref)[0][0])
-    per_class_path = os.path.join(output_dir, 'per_class_metrics.csv')
-    with open(per_class_path, 'w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=[
-            'class_index', 'a_i', 'log_A2', 'source_fit_rmse', 'acc_full', 'ce_full',
-            'acc_rank', f'tail_at_m{m_ref}',
-        ])
-        writer.writeheader()
-        for c in range(num_classes):
-            writer.writerow({
-                'class_index': c,
-                'a_i': float(a[c]),
-                'log_A2': float(source['log_A2'][c]),
-                'source_fit_rmse': float(source['log_rmse'][c]),
-                'acc_full': float(acc_full[c]),
-                'ce_full': float(ce_full[c]),
-                'acc_rank': float(acc_rank[c]),
-                f'tail_at_m{m_ref}': float(tail_by_m[c, ref_col]),
-            })
-    print(f'wrote {per_class_path}')
-
-    # --- Truncation curve CSV ---
-    trunc_path = os.path.join(output_dir, 'truncation_curve.csv')
-    with open(trunc_path, 'w', newline='', encoding='utf-8') as handle:
-        writer = csv.DictWriter(handle, fieldnames=[
-            'm', 'overall_acc', 'overall_ce', 'low_a_group_acc', 'high_a_group_acc',
-        ])
-        writer.writeheader()
-        for j, m in enumerate(trunc_m):
-            writer.writerow({
-                'm': int(m),
-                'overall_acc': float(acc_by_m[j]),
-                'overall_ce': float(ce_by_m[j]),
-                'low_a_group_acc': float(low_group_acc[j]),
-                'high_a_group_acc': float(high_group_acc[j]),
-            })
-    print(f'wrote {trunc_path}')
-
-    # --- Fit summary JSON ---
-    summary = {
-        'dataset': dataset,
-        'optimizer_key': args.optimizer_key,
-        'width': width,
-        'source_run_id': source_run_id,
-        'images_seen': images_seen,
-        'num_samples': int(num_samples),
-        'num_features': int(num_features),
-        'num_classes': int(num_classes),
-        'num_bins': int(args.num_bins),
-        'muP_divisor': divisor,
-        'classifier_recon_max_abs_diff': recon_max_diff,
-        'bulk_k_lo': int(k_lo),
-        'bulk_k_hi': int(k_hi),
-        'capacity_exponent_b': float(capacity['b']),
-        'capacity_b_sem': float(capacity['b_sem']),
-        'capacity_b_std': float(capacity['b_std']),
-        'capacity_log_rmse': float(capacity['log_rmse']),
-        'capacity_fit_seeds': int(capacity['n_seeds_used']),
-        'source_exponent_mean': float(np.mean(finite_a)) if finite_a.size else float('nan'),
-        'source_exponent_std': float(np.std(finite_a)) if finite_a.size else float('nan'),
-        'source_classes_fit': int(finite_a.size),
-        'source_negative_count': num_negative_a,
-        'overall_val_accuracy': overall_acc_full,
-        'overall_val_cross_entropy': overall_ce_full,
-        'accuracy_at_full_m': float(acc_by_m[-1]),
-        'corr_a_vs_accuracy_pearson': r_acc,
-        'corr_a_vs_accuracy_spearman': rho_acc,
-        'corr_a_vs_ce_pearson': r_ce,
-        'corr_a_vs_ce_spearman': rho_ce,
-        'trunc_m': [int(m) for m in trunc_m],
-    }
-    summary_path = os.path.join(output_dir, 'fit_summary.json')
-    with open(summary_path, 'w', encoding='utf-8') as handle:
-        json.dump(summary, handle, indent=2)
-    print(f'wrote {summary_path}')
-    print(f'corr(a, accuracy): pearson={r_acc:.3f} spearman={rho_acc:.3f}')
-    print(f'corr(a, cross-entropy): pearson={r_ce:.3f} spearman={rho_ce:.3f}')
-
-    # --- Figures ---
-    if not args.no_plots:
-        plot_arrays = {k: (np.asarray(v) if not isinstance(v, str) else v) for k, v in arrays.items()}
-        written = _render_all_figures(plot_arrays, output_dir, fmt='pdf')
-        for path in written:
-            print(f'wrote {path}')
-
-    print(f'done; outputs under {output_dir}')
+    run_powerlaw_analysis(
+        features=features.astype(np.float64),
+        labels=labels,
+        weight_eff=weight_eff,
+        bias=bias,
+        num_classes=num_classes,
+        run_label=run_label,
+        output_dir=output_dir,
+        num_bins=args.num_bins,
+        fit_seeds=args.fit_seeds,
+        fit_rmse_tol=args.fit_rmse_tol,
+        seed=int(args.seed),
+        trunc_list=args.trunc_list,
+        no_plots=args.no_plots,
+        model_logits=model_logits,  # the model's own forward-pass logits
+        source_arrays={
+            'dataset': dataset,
+            'optimizer_key': args.optimizer_key,
+            'width': np.int64(width),
+            'source_run_id': source_run_id,
+            'images_seen': np.int64(images_seen),
+        },
+        source_summary={
+            'dataset': dataset,
+            'optimizer_key': args.optimizer_key,
+            'width': width,
+            'source_run_id': source_run_id,
+            'images_seen': images_seen,
+            'muP_divisor': divisor,
+            'classifier_recon_max_abs_diff': recon_max_diff,
+        },
+    )
 
 
 def main() -> None:
