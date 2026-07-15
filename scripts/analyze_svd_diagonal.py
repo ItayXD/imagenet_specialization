@@ -363,11 +363,19 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     os.makedirs(output_dir, exist_ok=True)
     written = []
 
-    def _save(fig, stem):
+    def _save(fig, stem, tight_rect=None):
         path = os.path.join(output_dir, f'{stem}.{fmt}')
-        fig.savefig(path, bbox_inches='tight', dpi=200)
-        plt.close(fig)
-        written.append(path)
+        try:
+            if tight_rect is not None:
+                fig.tight_layout(rect=tight_rect)
+            fig.savefig(path, bbox_inches='tight', dpi=200)
+            written.append(path)
+        except ValueError as exc:
+            # Degenerate run: no resolvable diagonal band (e.g. negative source exponent =>
+            # empty log-scaled band axes). The heatmaps + singular spectrum still render.
+            print(f'skipped {stem}: {exc}')
+        finally:
+            plt.close(fig)
 
     positions = res['positions']
     floor = res['floor']
@@ -435,8 +443,7 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     ax.set_title('transverse shape preference vs position')
     ax.grid(True, which='both', alpha=0.25)
     fig.suptitle(f'Transverse band width & shape vs position — {run_label}')
-    fig.tight_layout(rect=(0, 0, 1, 0.95))
-    _save(fig, 'fig_svd_diag_width')
+    _save(fig, 'fig_svd_diag_width', tight_rect=(0, 0, 1, 0.95))
 
     # 3. Transverse core cross-sections: semilog-y vs |d| (exp->line) and vs d^2 (gauss->line).
     fig, axes = plt.subplots(1, 2, figsize=(11.5, 4.7))
@@ -467,8 +474,7 @@ def _render(res: dict, run_label: str, output_dir: str, fmt: str) -> list[str]:
     axes[1].set_xlim(0, (core_max * 1.05) ** 2)
     axes[0].legend(fontsize=8)
     fig.suptitle(f'Transverse core cross-section shape — {run_label}')
-    fig.tight_layout(rect=(0, 0, 1, 0.96))
-    _save(fig, 'fig_svd_diag_transverse')
+    _save(fig, 'fig_svd_diag_transverse', tight_rect=(0, 0, 1, 0.96))
 
     return written
 
