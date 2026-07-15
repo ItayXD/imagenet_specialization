@@ -576,33 +576,44 @@ def _render_haar(h: dict, run_label: str, output_dir: str, fmt: str) -> str:
 
 
 def _render_r2_heatmap(right_sq: np.ndarray, run_label: str, output_dir: str, fmt: str) -> list[str]:
-    """r_jk^2 heatmap with square cells (aspect='equal'), so the diagonal has slope 1."""
+    """r_jk^2 heatmaps with square cells (aspect='equal', diagonal has slope 1).
+
+    Emits a full-matrix version, and (when p != D) a version cropped to the leading
+    min(p,D) x min(p,D) block so the whole image is a square around the diagonal.
+    """
     written = []
     p, dim = right_sq.shape
-    height = 6.0
-    width = float(np.clip(height * dim / max(p, 1), 4.0, 22.0))
-    for scale in ('linear', 'log'):
-        fig, ax = plt.subplots(figsize=(width + 1.3, height))
-        if scale == 'log':
-            pos = right_sq[right_sq > 0]
-            vmax = float(right_sq.max())
-            vmin = float(np.quantile(pos, 0.02)) if pos.size else vmax * 1e-6
-            im = ax.imshow(right_sq, aspect='equal', origin='upper', cmap='magma',
-                           norm=LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax),
-                           interpolation='nearest')
-        else:
-            im = ax.imshow(right_sq, aspect='equal', origin='upper', cmap='magma',
-                           vmin=0.0, vmax=float(np.quantile(right_sq, 0.999)),
-                           interpolation='nearest')
-        ax.set_xlabel(r'PC index $k$ (by eigenvalue $\lambda_k$)')
-        ax.set_ylabel(r'singular mode $j$ (by singular value $s_j$)')
-        ax.set_title(f'$r_{{jk}}^2$ heatmap ({scale}, square cells) — {run_label}')
-        fig.colorbar(im, ax=ax, fraction=0.046 * p / max(dim, 1) + 0.02,
-                     label=r'$r_{jk}^2$' + (' (log)' if scale == 'log' else ''))
-        path = os.path.join(output_dir, f'fig_svd_r2_heatmap_{scale}.{fmt}')
-        fig.savefig(path, bbox_inches='tight', dpi=200)
-        plt.close(fig)
-        written.append(path)
+    m = min(p, dim)
+    variants = [('', right_sq, 'full')]
+    if p != dim:
+        variants.append(('_trimmed', right_sq[:m, :m], 'trimmed to square'))
+
+    for suffix, mat, label in variants:
+        pp, dd = mat.shape
+        height = 6.0
+        width = float(np.clip(height * dd / max(pp, 1), 4.0, 22.0))
+        for scale in ('linear', 'log'):
+            fig, ax = plt.subplots(figsize=(width + 1.3, height))
+            if scale == 'log':
+                pos = mat[mat > 0]
+                vmax = float(mat.max())
+                vmin = float(np.quantile(pos, 0.02)) if pos.size else vmax * 1e-6
+                im = ax.imshow(mat, aspect='equal', origin='upper', cmap='magma',
+                               norm=LogNorm(vmin=max(vmin, vmax * 1e-8), vmax=vmax),
+                               interpolation='nearest')
+            else:
+                im = ax.imshow(mat, aspect='equal', origin='upper', cmap='magma',
+                               vmin=0.0, vmax=float(np.quantile(mat, 0.999)),
+                               interpolation='nearest')
+            ax.set_xlabel(r'PC index $k$ (by eigenvalue $\lambda_k$)')
+            ax.set_ylabel(r'singular mode $j$ (by singular value $s_j$)')
+            ax.set_title(f'$r_{{jk}}^2$ heatmap ({scale}, {label}) — {run_label}')
+            fig.colorbar(im, ax=ax, fraction=0.046 * pp / max(dd, 1) + 0.02,
+                         label=r'$r_{jk}^2$' + (' (log)' if scale == 'log' else ''))
+            path = os.path.join(output_dir, f'fig_svd_r2_heatmap{suffix}_{scale}.{fmt}')
+            fig.savefig(path, bbox_inches='tight', dpi=200)
+            plt.close(fig)
+            written.append(path)
     return written
 
 
@@ -722,6 +733,10 @@ def main() -> None:
     sing_path = _render_singular(sfit, run_label, svd_dir, args.format)
     written.append(sing_path)
 
+    # r_jk^2 heatmaps (full + trimmed-to-square) -> svd/right/. Always rendered, since the
+    # heatmap is meaningful even when there are too few modes for the diagonal-band fits.
+    written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
+
     # The diagonal-band / Haar analysis of R needs many singular modes; skip when too few
     # (e.g. CIFAR-5M has C=10 -> 10 modes). Only R data is generated, all under svd/right/.
     if p_modes < 32:
@@ -785,7 +800,6 @@ def main() -> None:
         json.dump(summary, h, indent=2)
     written.extend(_render(res, run_label, output_dir, args.format))
     written.append(_render_haar(haar, run_label, output_dir, args.format))
-    written.extend(_render_r2_heatmap(right_sq, run_label, output_dir, args.format))
     written.append(os.path.join(output_dir, 'diagonal_band_summary.json'))
     for pth in written:
         print(f'wrote {pth}')
