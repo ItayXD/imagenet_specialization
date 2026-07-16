@@ -181,16 +181,18 @@ def render(runs: list[dict], out_path: str, ref_lambda: float, dataset_label: st
     ax.set_title(f'(e) Truncation recovery ($\\lambda_{{\\mathrm{{rel}}}}={ref:g}$)')
     ax.grid(True, which='both', alpha=0.25)
 
-    # (f) train (dotted) and val (solid) accuracy vs ridge lambda.
+    # (f) train (dotted) and val (solid) accuracy vs ridge lambda, log-y so the small val
+    # values stay visible next to the near-1 train values.
     ax = axes[1, 2]
+    clip = lambda vals: np.clip(np.asarray(vals, float), 1e-4, None)  # noqa: E731
     for w, p, s in each_series():
         xs = [_xlam(r['rel_lambda']) for r in s]
-        ax.plot(xs, [r['val_acc'] for r in s], marker=mk(p), ms=4, ls='-', color=wcolor[w])
-        ax.plot(xs, [r['train_acc'] for r in s], marker=mk(p), ms=3, ls=':', color=wcolor[w],
+        ax.plot(xs, clip([r['val_acc'] for r in s]), marker=mk(p), ms=4, ls='-', color=wcolor[w])
+        ax.plot(xs, clip([r['train_acc'] for r in s]), marker=mk(p), ms=3, ls=':', color=wcolor[w],
                 alpha=0.55)
-    ax.set_xscale('log')
+    ax.set_xscale('log'); ax.set_yscale('log')
     ax.set_xlabel(r'ridge $\lambda_{\mathrm{rel}}$ (0 at $10^{-4}$)')
-    ax.set_ylabel('accuracy')
+    ax.set_ylabel('accuracy (log)')
     ax.set_title('(f) Train (dotted) & val (solid) accuracy vs ridge')
     ax.grid(True, which='both', alpha=0.25)
 
