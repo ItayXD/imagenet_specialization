@@ -286,7 +286,8 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
     print(f'\n=== dataset={dataset} width={width} (ResNet18 at init) ===')
 
     model = ResNet18(num_classes=num_classes, num_filters=width,
-                     param_dtype=compute_dtype, stem_type=spec.stem_type)
+                     param_dtype=compute_dtype, stem_type=spec.stem_type,
+                     norm_type=args.norm_type)
     variables = _init_variables(model, input_shape, compute_dtype, args.init_seed + width)
 
     # Activate the inert residual branches (zero-init gammas -> ones/random).
@@ -297,8 +298,10 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
     print(f'residual_scale_init={args.residual_scale_init}: activated {n_activated} '
           f'zero-init BatchNorm scales')
 
-    # BatchNorm calibration over train images.
-    if args.residual_scale_init != 'zeros' and args.num_calib_batches > 0:
+    # BatchNorm calibration over train images. LayerNorm/GroupNorm are batch-independent
+    # (no running stats, no 'batch_stats' collection), so calibration is skipped entirely.
+    if (args.norm_type != 'layernorm' and args.residual_scale_init != 'zeros'
+            and args.num_calib_batches > 0):
         variables = _calibrate_batchnorm(model, variables, train_loader, args.num_calib_batches)
 
     # Features for fitting the ridge classifier (train) and for analysis (val). feature_mode
@@ -338,7 +341,8 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
         else os.path.join(base_save_dir, 'init_regression_powerlaw')
     pp_tag = _PREPROC_TAG.get(args.feature_preproc, '')
     pool_tag = 'vec' if args.pool_mode == 'vec' else ''
-    dir_suffix = ''.join(f'_{t}' for t in (pool_tag, pp_tag) if t)
+    norm_tag = 'ln' if args.norm_type == 'layernorm' else ''
+    dir_suffix = ''.join(f'_{t}' for t in (norm_tag, pool_tag, pp_tag) if t)
     for path in paths:
         rel = path['rel_lambda']
         tag = _lambda_tag(rel)
@@ -374,6 +378,7 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_abs_lambda': np.float64(path['abs_lambda']),
                 'ridge_dof': np.float64(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'norm_type': args.norm_type,
                 'pool_mode': args.pool_mode,
                 'feature_preproc': args.feature_preproc,
                 'feature_lambda1_share': np.float64(lam1_share),
@@ -390,6 +395,7 @@ def _analyze_width(*, width: int, args, dataset: str, num_classes: int, input_sh
                 'ridge_lambda_scale_mode': args.ridge_lambda_scale,
                 'ridge_effective_dof': float(path['dof']),
                 'residual_scale_init': args.residual_scale_init,
+                'norm_type': args.norm_type,
                 'pool_mode': args.pool_mode,
                 'feature_preproc': args.feature_preproc,
                 'feature_lambda1_share': float(lam1_share),
@@ -438,6 +444,11 @@ def parse_args() -> argparse.Namespace:
                              "per_sample_standardize: subtract each sample's mean (and divide by "
                              "std) over feature dims (Coates & Ng 2011). pre_relu: pool the block "
                              "pre-activation (before ReLU) instead, avoiding the DC mode at source.")
+    parser.add_argument('--norm-type', choices=['batchnorm', 'layernorm'], default='batchnorm',
+                        help="Normalization used everywhere in the ResNet. batchnorm (default) "
+                             "uses running stats (needs calibration); layernorm uses GroupNorm "
+                             "with 1 group (normalize over H,W,C per sample) -- batch-independent, "
+                             "so no calibration and no batch_stats.")
     parser.add_argument('--pool-mode', choices=['gap', 'vec'], default='gap',
                         help="How to collapse the last block's (H,W,C) map into features. "
                              "gap: global-average-pool -> C dims (conventional; ill-conditioned "

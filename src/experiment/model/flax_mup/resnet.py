@@ -108,6 +108,7 @@ class ResNet(nn.Module):
 		num_classes: int
 		stem_type: str = 'imagenet'
 		num_filters: int = 64
+		norm_type: str = 'batchnorm'  # 'batchnorm' or 'layernorm' (GroupNorm, 1 group)
 		act: Callable = nn.relu
 		conv: ModuleDef = nn.Conv
 		kernel_init: Callable = nn.initializers.variance_scaling(
@@ -120,10 +121,16 @@ class ResNet(nn.Module):
 		def __call__(self, x, train: bool = True):
 				conv = partial(self.conv, use_bias=False,
 											 kernel_init=self.kernel_init)
-				norm = partial(nn.BatchNorm,
-											 use_running_average=not train,
-											 momentum=0.9,
-											 epsilon=1e-5)
+				if self.norm_type == 'layernorm':
+						# LayerNorm everywhere == GroupNorm with a single group (normalize over
+						# H, W, C per sample). Batch-independent -> no running stats / calibration,
+						# and no 'batch_stats' collection is created.
+						norm = partial(nn.GroupNorm, num_groups=1, epsilon=1e-5)
+				else:
+						norm = partial(nn.BatchNorm,
+													 use_running_average=not train,
+													 momentum=0.9,
+													 epsilon=1e-5)
 				if self.stem_type == 'cifar':
 						x = conv(self.num_filters, (3, 3), (1, 1),
 								 padding='SAME',
